@@ -64,6 +64,7 @@ function initializeDashboard() {
   console.log('Initializing Health Monitoring Dashboard...');
   updateSystemStatus('online');
   updateMqttStatus(false);
+  updateSessionSummary();
 }
 
 function setupEventListeners() {
@@ -80,6 +81,7 @@ function setupEventListeners() {
   document.getElementById('patient-select')?.addEventListener('change', (e) => {
     currentPatientId = e.target.value;
     // Changing patient should immediately refresh UI
+    updateSessionSummary();
     updateDashboard({ force: true });
   });
 
@@ -267,6 +269,8 @@ async function handleResetRun() {
       if (window.chartManagers.vitals) window.chartManagers.vitals.refresh();
       if (window.chartManagers.env) window.chartManagers.env.refresh();
     }
+    const timeline = document.getElementById('cycle-timeline');
+    if (timeline) timeline.innerHTML = '';
     renderLatestCycle({ readings: [] });
     updateFlowMap(null);
     setStatus(statusDiv, 'Run data cleared. Start a cycle to generate new data.', 'success');
@@ -358,6 +362,7 @@ async function updateDashboard({ force = false } = {}) {
     await updateActuators();
     await updateLogs({ force });
     await updateMlStatus();
+    updateSessionSummary();
 
     // Auto-refresh chart periodically (but not every tick)
     if (window.chartManagers && (force || shouldRefreshChart())) {
@@ -842,9 +847,10 @@ function renderLatestCycle(result) {
     const mlText = result.ml_prediction && result.ml_prediction.health_status
       ? `${result.ml_prediction.health_status} (${Math.round((result.ml_prediction.confidence || 0) * 100)}%)`
       : 'N/A';
+    const cycleLabel = result.cycle != null ? result.cycle : '-';
     meta.innerHTML = `
-      <div><strong>Last Cycle:</strong> ${result.cycle}</div>
-      <div><strong>Readings:</strong> ${result.sensor_readings} | <strong>Decisions:</strong> ${result.decisions_made}</div>
+      <div><strong>Last Cycle:</strong> ${cycleLabel}</div>
+      <div><strong>Readings:</strong> ${result.sensor_readings ?? '-'} | <strong>Decisions:</strong> ${result.decisions_made ?? '-'}</div>
       <div><strong>Emergency:</strong> ${result.emergency_triggered ? 'YES' : 'NO'} | <strong>ML:</strong> ${mlText}</div>
     `;
   }
@@ -852,7 +858,9 @@ function renderLatestCycle(result) {
   updatePipeline(result);
   updateFlowMap(result);
 
-  lastCycleAt = new Date();
+  if (result.cycle != null) {
+    lastCycleAt = new Date();
+  }
   updateSessionSummary();
 
   const emergencyBanner = document.getElementById('emergency-banner');
@@ -992,7 +1000,7 @@ function updatePipeline(result) {
 
 function updateCycleTimeline(result) {
   const timelineEl = document.getElementById('cycle-timeline');
-  if (!timelineEl || !result) return;
+  if (!timelineEl || !result || result.cycle == null) return;
 
   const status = getCycleSeverity(result);
   cycleHistory.push({ cycle: result.cycle, status });
