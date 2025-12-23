@@ -1,0 +1,124 @@
+{
+  "algorithm": "gradient_boosting",
+  "algorithm_name": "Gradient Boosting",
+  "feature_names": [
+    "heart_rate",
+    "blood_pressure_systolic",
+    "blood_pressure_diastolic",
+    "body_temperature",
+    "oxygen_saturation",
+    "glucose_level",
+    "activity_steps"
+  ],
+  "class_names": [
+    "Normal",
+    "Warning",
+    "Critical"
+  ],
+  "feature_medians": [
+    76.14767605955286,
+    120.15323471115852,
+    79.90076099667337,
+    36.50993492316069,
+    98.05112723835327,
+    95.66101338978096,
+    4978.411717960809
+  ],
+  "metrics": {
+    "status": "success",
+    "algorithm": "gradient_boosting",
+    "algorithm_name": "Gradient Boosting",
+    "split": {
+      "train": 0.7,
+      "val": 0.10000000000000009,
+      "test": 0.2
+    },
+    "samples": {
+      "total": 1500,
+      "train": 1049,
+      "val": 150,
+      "test": 301
+    },
+    "scores": {
+      "train_score": 1.0,
+      "val_score": 0.96,
+      "test_score": 0.9667774086378738
+    },
+    "metrics": {
+      "accuracy": 0.9667774086378738,
+      "f1_score": 0.9671111862209056,
+      "precision": 0.967709113481727,
+      "recall": 0.9667774086378738
+    },
+    "confusion_matrix": {
+      "labels": [
+        "Normal",
+        "Warning",
+        "Critical"
+      ],
+      "matrix": [
+        [
+          230,
+          6,
+          0
+        ],
+        [
+          3,
+          37,
+          1
+        ],
+        [
+          0,
+          0,
+          24
+        ]
+      ]
+    },
+    "classification_report": {
+      "Normal": {
+        "precision": 0.9871244635193133,
+        "recall": 0.9745762711864406,
+        "f1-score": 0.9808102345415778,
+        "support": 236.0
+      },
+      "Warning": {
+        "precision": 0.8604651162790697,
+        "recall": 0.9024390243902439,
+        "f1-score": 0.8809523809523809,
+        "support": 41.0
+      },
+      "Critical": {
+        "precision": 0.96,
+        "recall": 1.0,
+        "f1-score": 0.9795918367346939,
+        "support": 24.0
+      },
+      "accuracy": 0.9667774086378738,
+      "macro avg": {
+        "precision": 0.9358631932661275,
+        "recall": 0.9590050985255615,
+        "f1-score": 0.9471181507428842,
+        "support": 301.0
+      },
+      "weighted avg": {
+        "precision": 0.967709113481727,
+        "recall": 0.9667774086378738,
+        "f1-score": 0.9671111862209056,
+        "support": 301.0
+      }
+    },
+    "cross_validation": {
+      "folds": 5,
+      "scores": [
+        0.9476190476190476,
+        0.9666666666666667,
+        0.9619047619047619,
+        0.9761904761904762,
+        0.9856459330143541
+      ],
+      "mean": 0.9676053770790614,
+      "std": 0.012899590234540376
+    }
+  },
+  "saved_at": "2025-12-23T12:43:19.992166Z"
+}

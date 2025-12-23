@@ -1,0 +1,95 @@
+
+services:
+  # MQTT Broker
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: health_monitoring_mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - iot_network
+    command: mosquitto -c /mosquitto/config/mosquitto.conf
+
+  # MongoDB - Document database for health monitoring data
+  mongodb:
+    image: mongo:7.0
+    container_name: health_monitoring_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+      - MONGO_INITDB_DATABASE=health_data
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - iot_network
+    command: mongod --auth
+
+  # Django Backend - Health Monitoring System
+  django_backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: health_monitoring_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URL=mongodb://admin:admin123@mongodb:27017/health_data?authSource=admin
+      - MONGODB_DATABASE=health_data
+      - DEBUG=True
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - mongodb
+      - mqtt
+    networks:
+      - iot_network
+    command: python manage.py runserver 0.0.0.0:8000
+
+  # MQTT Subscriber - Ingests data from broker into storage
+  mqtt_subscriber:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: health_monitoring_mqtt_subscriber
+    environment:
+      - MONGODB_URL=mongodb://admin:admin123@mongodb:27017/health_data?authSource=admin
+      - MONGODB_DATABASE=health_data
+      - MQTT_ENABLED=True
+      - MQTT_BROKER_HOST=mqtt
+      - MQTT_BROKER_PORT=1883
+      - MQTT_TOPIC_RAW=iot/health/raw/#
+      - MQTT_TOPIC_PROCESSED=iot/health/processed/#
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - mongodb
+      - mqtt
+    networks:
+      - iot_network
+    command: python manage.py mqtt_subscriber
+
+  # Frontend - HTML/CSS/JS
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: health_monitoring_frontend
+    ports:
+      - "80:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html
+    depends_on:
+      - django_backend
+    networks:
+      - iot_network
+
+volumes:
+  mongodb_data:
+
+networks:
+  iot_network:
+    driver: bridge

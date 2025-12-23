@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Monitoring IoT System - Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
+</head>
+<body>
+<div class="page">
+    <header class="header">
+        <div class="title-block">
+            <p class="eyebrow">Health Monitoring IoT System</p>
+            <h1>Clinical Monitoring Dashboard</h1>
+            <p class="subtitle">Edge processing, ML decisions, actuator responses, and analytics</p>
+        </div>
+        <div class="status-block">
+            <div class="status-pill" id="system-status-pill">SYSTEM: ONLINE</div>
+            <div class="status-pill muted" id="mqtt-status-pill">MQTT: OFF</div>
+            <div class="status-time" id="current-time"></div>
+        </div>
+    </header>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-sim"></span>Simulation Control</h2>
+            <div class="patient-selector">
+                <label for="patient-select">Patient:</label>
+                <select id="patient-select">
+                    <option value="P001">Patient P001</option>
+                    <option value="P002">Patient P002</option>
+                    <option value="all">All Patients</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="control-buttons">
+            <button id="btn-start-cycle" class="btn btn-primary">Run Single Cycle</button>
+            <button id="btn-start-demo" class="btn btn-secondary">Start Demo</button>
+            <button id="btn-start-simulation" class="btn btn-success">Start Monitoring</button>
+            <button id="btn-stop-simulation" class="btn btn-danger" disabled>Stop Monitoring</button>
+            <button id="btn-reset-run" class="btn btn-secondary">Reset Run</button>
+        </div>
+
+        <div class="simulation-settings">
+            <label>Cycles: <input type="number" id="num-cycles" value="20" min="1" max="100"></label>
+            <label>Delay (seconds): <input type="number" id="delay-seconds" value="2" min="0.5" max="10" step="0.5"></label>
+            <label class="checkbox">
+                <input type="checkbox" id="simulate-emergency">
+                Simulate emergency (inject abnormal vitals)
+            </label>
+        </div>
+        <div class="quick-guide" id="quick-guide">
+            <strong>Quick guide:</strong> Start Demo shows a normal -> emergency -> normal story. Monitoring runs continuous cycles.
+        </div>
+        <div id="simulation-status" class="status-message"></div>
+        <div class="session-overview">
+            <div class="overview-card">
+                <span class="overview-label">Active Patient</span>
+                <span class="overview-value" id="overview-patient">P001</span>
+            </div>
+            <div class="overview-card">
+                <span class="overview-label">Mode</span>
+                <span class="overview-value" id="overview-mode">IDLE</span>
+            </div>
+            <div class="overview-card">
+                <span class="overview-label">Last Cycle</span>
+                <span class="overview-value" id="overview-cycle">-</span>
+            </div>
+            <div class="overview-card">
+                <span class="overview-label">Emergency</span>
+                <span class="overview-value" id="overview-emergency">NO</span>
+            </div>
+            <div class="overview-card">
+                <span class="overview-label">Data Source</span>
+                <span class="overview-value" id="overview-source">SIMULATOR</span>
+            </div>
+            <div class="overview-card">
+                <span class="overview-label">Auto Refresh</span>
+                <span class="overview-value" id="overview-refresh">5s</span>
+            </div>
+        </div>
+
+        <div class="grid two">
+            <div class="panel-card">
+                <h3>Latest Cycle</h3>
+                <div class="latest-cycle-grid">
+                    <div class="latest-cycle-meta" id="latest-cycle-meta">
+                        <div><strong>Last Cycle:</strong> -</div>
+                        <div><strong>Readings:</strong> - | <strong>Decisions:</strong> -</div>
+                        <div><strong>Emergency:</strong> - | <strong>ML:</strong> -</div>
+                    </div>
+                    <div class="response-times" id="response-times-panel">
+                        <div><strong>Response Time (Total)</strong></div>
+                        <div>avg: - | p95: - | max: -</div>
+                        <div class="fine-print">Auto-updates during monitoring</div>
+                    </div>
+                </div>
+
+                <div class="latest-cycle-table-wrap">
+                    <table class="latest-cycle-table">
+                        <thead>
+                        <tr>
+                            <th>Measurement</th>
+                            <th>Raw</th>
+                            <th>Processed</th>
+                            <th>Flag</th>
+                        </tr>
+                        </thead>
+                        <tbody id="latest-cycle-table">
+                        <tr>
+                            <td colspan="3" class="muted-text">Run a cycle to see generated data</td>
+                        </tr>
+                        </tbody>
+                    </table>
+                    <div class="fine-print">Processed values reflect edge filtering before reaching the gateway.</div>
+                    <div class="flag-legend">
+                        <span class="flag-badge normal">OK</span>
+                        <span class="flag-badge warning">WARN</span>
+                        <span class="flag-badge critical">CRIT</span>
+                        <span class="flag-badge filtered">FILTERED</span>
+                    </div>
+                </div>
+                <div class="emergency-banner" id="emergency-banner">Emergency event detected in this cycle</div>
+                <div class="panel-card">
+                    <h3>Actuator Decisions</h3>
+                    <div id="actuator-decisions">No actuator decisions yet.</div>
+                </div>
+                <div class="cycle-timeline" id="cycle-timeline"></div>
+            </div>
+
+            <div class="panel-card">
+                <h3>Pipeline Trace</h3>
+                <div class="pipeline-grid" id="pipeline-panel">
+                    <div class="pipeline-item">
+                        <div class="pipeline-title">Sensor Generation</div>
+                        <div class="pipeline-value" id="pipe-sensor">-</div>
+                    </div>
+                    <div class="pipeline-item">
+                        <div class="pipeline-title">Edge Processing</div>
+                        <div class="pipeline-value" id="pipe-edge">-</div>
+                    </div>
+                    <div class="pipeline-item">
+                        <div class="pipeline-title">Storage</div>
+                        <div class="pipeline-value" id="pipe-storage">-</div>
+                    </div>
+                    <div class="pipeline-item">
+                        <div class="pipeline-title">ML Prediction</div>
+                        <div class="pipeline-value" id="pipe-ml">-</div>
+                    </div>
+                    <div class="pipeline-item">
+                        <div class="pipeline-title">Actuator Decision</div>
+                        <div class="pipeline-value" id="pipe-actuator">-</div>
+                    </div>
+                    <div class="pipeline-item total">
+                        <div class="pipeline-title">Total</div>
+                        <div class="pipeline-value" id="pipe-total">-</div>
+                    </div>
+                </div>
+                <div class="fine-print">Latency is measured per cycle to evaluate responsiveness.</div>
+                <div class="ml-status">
+                    <h4>ML Model Status</h4>
+                    <div class="ml-row"><span>Status</span><strong id="ml-status">Unknown</strong></div>
+                    <div class="ml-row"><span>Algorithm</span><strong id="ml-algorithm">-</strong></div>
+                    <div class="ml-row"><span>Classes</span><strong id="ml-classes">-</strong></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2>System Flow Map</h2>
+            <p class="muted-text">Sensors -> Edge -> Django Gateway -> ML -> Actuators</p>
+        </div>
+        <div class="flow-grid">
+            <div class="flow-card">
+                <h4>Sensors</h4>
+                <div class="flow-value" id="flow-sensors">Waiting for data</div>
+            </div>
+            <div class="flow-card">
+                <h4>Edge Processor</h4>
+                <div class="flow-value" id="flow-edge">Idle</div>
+            </div>
+            <div class="flow-card">
+                <h4>Django Gateway</h4>
+                <div class="flow-value" id="flow-gateway">Idle</div>
+            </div>
+            <div class="flow-card">
+                <h4>Data Warehouse</h4>
+                <div class="flow-value" id="flow-storage">MongoDB/CSV</div>
+            </div>
+            <div class="flow-card">
+                <h4>ML Decision</h4>
+                <div class="flow-value" id="flow-ml">Not trained</div>
+            </div>
+            <div class="flow-card">
+                <h4>Actuators</h4>
+                <div class="flow-value" id="flow-actuators">No actions</div>
+            </div>
+        </div>
+        <div class="fine-print">If using MQTT, sensor readings can come from external devices.</div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-vitals"></span>Vital Signs</h2>
+            <p class="muted-text">Patient sensors and core health metrics</p>
+        </div>
+        <div class="cards-grid">
+            <div class="card" id="card-heart-rate">
+                <div class="card-header">
+                    <h3>Heart Rate</h3>
+                    <span class="card-status" id="status-hr">-</span>
+                </div>
+                <div class="card-value" id="value-hr">--</div>
+                <div class="card-unit">bpm</div>
+                <div class="card-normal-range">Normal: 60-100 bpm</div>
+            </div>
+
+            <div class="card" id="card-blood-pressure">
+                <div class="card-header">
+                    <h3>Blood Pressure</h3>
+                    <span class="card-status" id="status-bp">-</span>
+                </div>
+                <div class="card-value" id="value-bp">--/--</div>
+                <div class="card-unit">mmHg</div>
+                <div class="card-normal-range">Normal: 90-140/60-90 mmHg</div>
+            </div>
+
+            <div class="card" id="card-temperature">
+                <div class="card-header">
+                    <h3>Body Temperature</h3>
+                    <span class="card-status" id="status-temp">-</span>
+                </div>
+                <div class="card-value" id="value-temp">--</div>
+                <div class="card-unit">C</div>
+                <div class="card-normal-range">Normal: 36.1-37.2 C</div>
+            </div>
+
+            <div class="card" id="card-spo2">
+                <div class="card-header">
+                    <h3>Oxygen Saturation</h3>
+                    <span class="card-status" id="status-spo2">-</span>
+                </div>
+                <div class="card-value" id="value-spo2">--</div>
+                <div class="card-unit">%</div>
+                <div class="card-normal-range">Normal: 95-100%</div>
+            </div>
+
+            <div class="card" id="card-glucose">
+                <div class="card-header">
+                    <h3>Glucose Level</h3>
+                    <span class="card-status" id="status-glucose">-</span>
+                </div>
+                <div class="card-value" id="value-glucose">--</div>
+                <div class="card-unit">mg/dL</div>
+                <div class="card-normal-range">Normal: 70-100 mg/dL</div>
+            </div>
+
+            <div class="card" id="card-activity">
+                <div class="card-header">
+                    <h3>Activity</h3>
+                    <span class="card-status" id="status-activity">-</span>
+                </div>
+                <div class="card-value" id="value-activity">--</div>
+                <div class="card-unit">steps</div>
+                <div class="card-normal-range">Daily activity indicator</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-env"></span>Environment Sensors</h2>
+            <p class="muted-text">Room conditions that impact patient safety</p>
+        </div>
+        <div class="cards-grid env-grid">
+            <div class="card compact" id="card-ambient-temperature">
+                <div class="card-header">
+                    <h3>Room Temp</h3>
+                    <span class="card-status" id="status-room-temp">-</span>
+                </div>
+                <div class="card-value" id="value-room-temp">--</div>
+                <div class="card-unit">C</div>
+                <div class="card-normal-range">Normal: 20-24 C</div>
+            </div>
+
+            <div class="card compact" id="card-humidity">
+                <div class="card-header">
+                    <h3>Humidity</h3>
+                    <span class="card-status" id="status-humidity">-</span>
+                </div>
+                <div class="card-value" id="value-humidity">--</div>
+                <div class="card-unit">%</div>
+                <div class="card-normal-range">Normal: 30-60%</div>
+            </div>
+
+            <div class="card compact" id="card-light">
+                <div class="card-header">
+                    <h3>Light Level</h3>
+                    <span class="card-status" id="status-light">-</span>
+                </div>
+                <div class="card-value" id="value-light">--</div>
+                <div class="card-unit">lux</div>
+                <div class="card-normal-range">Normal: 100-800 lux</div>
+            </div>
+
+            <div class="card compact" id="card-motion">
+                <div class="card-header">
+                    <h3>Motion</h3>
+                    <span class="card-status" id="status-motion">-</span>
+                </div>
+                <div class="card-value" id="value-motion">--</div>
+                <div class="card-unit">detected</div>
+                <div class="card-normal-range">0 = none, 1 = detected</div>
+            </div>
+
+            <div class="card compact" id="card-co2">
+                <div class="card-header">
+                    <h3>CO2</h3>
+                    <span class="card-status" id="status-co2">-</span>
+                </div>
+                <div class="card-value" id="value-co2">--</div>
+                <div class="card-unit">ppm</div>
+                <div class="card-normal-range">Normal: 400-1000 ppm</div>
+            </div>
+
+            <div class="card compact" id="card-sound">
+                <div class="card-header">
+                    <h3>Sound Level</h3>
+                    <span class="card-status" id="status-sound">-</span>
+                </div>
+                <div class="card-value" id="value-sound">--</div>
+                <div class="card-unit">dB</div>
+                <div class="card-normal-range">Normal: 30-60 dB</div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-status"></span>Health Status</h2>
+            <p class="muted-text">Decision engine output and active alerts</p>
+        </div>
+        <div class="status-panel">
+            <div class="status-indicator-large" id="health-status-indicator">
+                <div class="status-icon" id="health-status-icon">OK</div>
+                <div class="status-text" id="health-status-text">NORMAL</div>
+                <div class="status-confidence" id="health-confidence">Confidence: -</div>
+            </div>
+            <div class="alerts-panel" id="alerts-panel">
+                <h3>Alerts</h3>
+                <div id="alerts-list"></div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-ml"></span>ML Model Lab</h2>
+            <p class="muted-text">Train and compare models, then review metrics</p>
+        </div>
+        <div class="control-buttons">
+            <button id="btn-ml-train" class="btn btn-primary">Train Default Model</button>
+            <button id="btn-ml-compare" class="btn btn-secondary">Compare Models</button>
+        </div>
+        <div id="ml-status-message" class="status-message"></div>
+        <div class="grid two">
+            <div class="panel-card">
+                <h3>Comparison Metrics</h3>
+                <table class="latest-cycle-table">
+                    <thead>
+                    <tr>
+                        <th>Model</th>
+                        <th>Accuracy</th>
+                        <th>Precision</th>
+                        <th>Recall</th>
+                        <th>F1</th>
+                    </tr>
+                    </thead>
+                    <tbody id="ml-compare-table">
+                    <tr>
+                        <td colspan="5" class="muted-text">Run "Compare Models" to populate metrics</td>
+                    </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="panel-card">
+                <h3>Model Performance</h3>
+                <div class="chart-container">
+                    <canvas id="ml-compare-chart"></canvas>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-trends"></span>Trends</h2>
+            <p class="muted-text">Historical charts with normal range bands</p>
+        </div>
+        <div class="grid two">
+            <div class="panel-card">
+                <div class="chart-controls">
+                    <label>Vital Sensor:
+                        <select id="chart-sensor-vitals">
+                            <option value="heart_rate">Heart Rate</option>
+                            <option value="blood_pressure_systolic">Blood Pressure (Systolic)</option>
+                            <option value="blood_pressure_diastolic">Blood Pressure (Diastolic)</option>
+                            <option value="body_temperature">Body Temperature</option>
+                            <option value="oxygen_saturation">SpO2</option>
+                            <option value="glucose_level">Glucose</option>
+                            <option value="activity_steps">Activity</option>
+                        </select>
+                    </label>
+                    <button id="btn-refresh-chart-vitals" class="btn btn-secondary">Refresh</button>
+                </div>
+                <div class="chart-container">
+                    <canvas id="sensor-chart-vitals"></canvas>
+                </div>
+            </div>
+            <div class="panel-card">
+                <div class="chart-controls">
+                    <label>Environment Sensor:
+                        <select id="chart-sensor-env">
+                            <option value="ambient_temperature">Room Temperature</option>
+                            <option value="humidity">Humidity</option>
+                            <option value="light_level">Light Level</option>
+                            <option value="motion_detected">Motion</option>
+                            <option value="co2_level">CO2</option>
+                            <option value="sound_level">Sound Level</option>
+                        </select>
+                    </label>
+                    <button id="btn-refresh-chart-env" class="btn btn-secondary">Refresh</button>
+                </div>
+                <div class="chart-container">
+                    <canvas id="sensor-chart-env"></canvas>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-actuators"></span>Actuator Status</h2>
+            <p class="muted-text">Automated responses triggered by rules or ML</p>
+        </div>
+        <label class="checkbox muted-text">
+            <input type="checkbox" id="toggle-previous-actuators">
+            Show actuators from previous runs
+        </label>
+        <div class="actuators-grid" id="actuators-grid"></div>
+    </section>
+
+    <section class="panel">
+        <div class="panel-header">
+            <h2><span class="section-icon icon-logs"></span>System Logs</h2>
+            <p class="muted-text">Recent events by subsystem</p>
+        </div>
+        <div class="log-controls">
+            <label>Filter:
+                <select id="log-filter">
+                    <option value="all">All</option>
+                    <option value="sensor">Sensors</option>
+                    <option value="controller">Controller</option>
+                    <option value="simulation">Simulation</option>
+                    <option value="edge_processor">Edge Processor</option>
+                    <option value="mqtt">MQTT</option>
+                </select>
+            </label>
+            <button id="btn-clear-logs" class="btn btn-secondary">Clear</button>
+        </div>
+        <div class="logs-container" id="logs-container"></div>
+    </section>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/dashboard.js"></script>
+<script src="js/charts.js"></script>
+</body>
+</html>

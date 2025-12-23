@@ -1,0 +1,96 @@
+{
+  "status": "success",
+  "algorithm": "naive_bayes",
+  "algorithm_name": "Naive Bayes",
+  "split": {
+    "train": 0.7,
+    "val": 0.10000000000000009,
+    "test": 0.2
+  },
+  "samples": {
+    "total": 1500,
+    "train": 1049,
+    "val": 150,
+    "test": 301
+  },
+  "scores": {
+    "train_score": 0.8474737845567207,
+    "val_score": 0.8666666666666667,
+    "test_score": 0.840531561461794
+  },
+  "metrics": {
+    "accuracy": 0.840531561461794,
+    "f1_score": 0.8083345835077129,
+    "precision": 0.8180545921409709,
+    "recall": 0.840531561461794
+  },
+  "confusion_matrix": {
+    "labels": [
+      "Normal",
+      "Warning",
+      "Critical"
+    ],
+    "matrix": [
+      [
+        234,
+        1,
+        1
+      ],
+      [
+        28,
+        10,
+        3
+      ],
+      [
+        11,
+        4,
+        9
+      ]
+    ]
+  },
+  "classification_report": {
+    "Normal": {
+      "precision": 0.8571428571428571,
+      "recall": 0.9915254237288136,
+      "f1-score": 0.9194499017681729,
+      "support": 236.0
+    },
+    "Warning": {
+      "precision": 0.6666666666666666,
+      "recall": 0.24390243902439024,
+      "f1-score": 0.35714285714285715,
+      "support": 41.0
+    },
+    "Critical": {
+      "precision": 0.6923076923076923,
+      "recall": 0.375,
+      "f1-score": 0.48648648648648646,
+      "support": 24.0
+    },
+    "accuracy": 0.840531561461794,
+    "macro avg": {
+      "precision": 0.7387057387057387,
+      "recall": 0.5368092875844013,
+      "f1-score": 0.5876930817991721,
+      "support": 301.0
+    },
+    "weighted avg": {
+      "precision": 0.8180545921409709,
+      "recall": 0.840531561461794,
+      "f1-score": 0.8083345835077129,
+      "support": 301.0
+    }
+  },
+  "cross_validation": {
+    "folds": 5,
+    "scores": [
+      0.7904761904761904,
+      0.8714285714285714,
+      0.8476190476190476,
+      0.8523809523809524,
+      0.8564593301435407
+    ],
+    "mean": 0.8436728184096605,
+    "std": 0.027767471090088394
+  }
+}
