@@ -51,6 +51,8 @@ class HealthSensorSimulator:
             "patient_002_bedside": ["blood_pressure_systolic", "blood_pressure_diastolic", "body_temperature"],
             "patient_002_room": ["ambient_temperature", "humidity", "light_level", "motion_detected", "co2_level", "sound_level"],
         }
+        self.edge_sensor_types = {"oxygen_saturation"}
+        self.edge_max_attempts = 3
     
     def generate_reading(
         self,
@@ -88,7 +90,7 @@ class HealthSensorSimulator:
         # Generate value based on sensor type
         value = self._generate_sensor_value(sensor_type, simulate_emergency)
         
-        return SensorReading(
+        reading = SensorReading(
             measurement=sensor_type,
             device_id=device_id,
             sensor_id=f"{device_id}_{sensor_type}",
@@ -100,6 +102,29 @@ class HealthSensorSimulator:
                 "device_type": device_id.split("_")[-1]  # wearable, bedside, glucose
             }
         )
+
+        if sensor_type in self.edge_sensor_types:
+            from app.services.edge_processor import edge_processor
+
+            processed = None
+            attempt = 0
+            while attempt < self.edge_max_attempts and processed is None:
+                attempt += 1
+                processed = edge_processor.process_reading(reading)
+                if processed is None:
+                    reading.value = self._generate_sensor_value(sensor_type, simulate_emergency)
+
+            if processed is not None:
+                processed.tags = (processed.tags or {})
+                processed.tags["processed_by"] = "sensor_edge"
+                processed.tags["sensor_edge_type"] = sensor_type
+                processed.tags["sensor_edge_attempts"] = attempt
+                return processed
+
+            reading.tags["processed_by"] = "sensor_edge_failed"
+            reading.tags["sensor_edge_attempts"] = attempt
+
+        return reading
     
     def _generate_sensor_value(self, sensor_type: str, simulate_emergency: bool = False) -> float:
         """Generate sensor value based on type"""

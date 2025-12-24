@@ -2,6 +2,7 @@
 Views for Analytics API
 Provides descriptive and prescriptive analytics with data export
 """
+import json
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -94,15 +95,19 @@ def export_data(request):
             if not measurements:
                 measurements = [
                     "heart_rate", "blood_pressure_systolic", "blood_pressure_diastolic",
-                    "body_temperature", "oxygen_saturation", "glucose_level", "activity_steps"
+                    "body_temperature", "oxygen_saturation", "glucose_level", "activity_steps",
+                    "ambient_temperature", "humidity", "light_level", "motion_detected",
+                    "co2_level", "sound_level"
                 ]
-            
+            measurements = sorted(set(measurements))
+            per_measurement_limit = max(1, limit // len(measurements))
+
             all_data = []
-            for meas in measurements[:10]:  # Limit to 10 measurements
+            for meas in measurements:
                 meas_data = mongodb_service.query_sensor_data(
                     measurement=meas,
                     device_id=device_id,
-                    limit=limit // len(measurements),
+                    limit=per_measurement_limit,
                     start_time=start_time_str,
                     stop_time=end_time_str,
                     default_time_window=False  # Allow querying all data if no time filter
@@ -118,10 +123,46 @@ def export_data(request):
         
         # Convert to DataFrame
         df = pd.DataFrame(data)
-        
+
         # Rename columns for clarity
         if 'time' in df.columns:
             df = df.rename(columns={'time': 'timestamp'})
+        if 'timestamp' in df.columns:
+            try:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+            except Exception:
+                pass
+
+        # Flatten tags into dedicated columns for spreadsheet-friendly exports.
+        tag_keys = [
+            "patient_id",
+            "location",
+            "device_type",
+            "processed_by",
+            "sensor_edge_type",
+            "sensor_edge_attempts",
+        ]
+        if 'tags' in df.columns:
+            def _tag_value(tags, key):
+                if isinstance(tags, str):
+                    try:
+                        tags = json.loads(tags)
+                    except Exception:
+                        tags = {}
+                if isinstance(tags, dict):
+                    return tags.get(key)
+                return None
+
+            for key in tag_keys:
+                df[f"tag_{key}"] = df['tags'].apply(lambda t, k=key: _tag_value(t, k))
+            df = df.drop(columns=['tags'])
+
+        preferred_cols = ["measurement", "timestamp", "device_id", "sensor_id", "value"]
+        tag_cols = [f"tag_{k}" for k in tag_keys if f"tag_{k}" in df.columns]
+        ordered_cols = [col for col in preferred_cols if col in df.columns] + tag_cols
+        remaining_cols = [col for col in df.columns if col not in ordered_cols]
+        if ordered_cols:
+            df = df[ordered_cols + remaining_cols]
         
         # Export based on format
         if format_type == 'xlsx':
@@ -169,6 +210,10 @@ def export_data(request):
             return response
             
         elif format_type == 'csv':
+            if 'timestamp' in df.columns and pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+                df = df.copy()
+                df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+
             # Create CSV file
             output = BytesIO()
             df.to_csv(output, index=False)

@@ -23,6 +23,7 @@ Open http://localhost in your browser.
 2. Click **"Run Single Cycle"** (without emergency flag)
 3. Observe:
    - Vital signs appear in normal ranges
+   - Environment sensors (ambient temp, humidity, CO2) show normal ranges
    - Health status shows "NORMAL" (green)
    - No critical alerts
    - Actuators remain inactive (normal state)
@@ -30,6 +31,7 @@ Open http://localhost in your browser.
 **What this demonstrates:**
 - Normal health monitoring
 - Sensor data generation
+- Additional environmental sensors visible in the UI
 - Edge processing (filtering, validation)
 - ML prediction (if model is trained)
 - Data storage in MongoDB
@@ -100,6 +102,7 @@ Open http://localhost in your browser.
    - Detects outliers (IQR method)
    - Validates ranges (medical thresholds)
    - Detects anomalies (bradycardia, hypoxia, etc.)
+   - SpO2 can be filtered at the sensor layer before gateway
    
 3. Django Backend (Cloud/Gateway)
    ↓
@@ -219,6 +222,7 @@ In this architecture:
 ### 1. Normal Operation (2 minutes)
 - Run single cycle (no emergency)
 - Show normal vital signs
+- Show environment sensors panel (ambient temp, humidity, CO2)
 - Explain normal ranges
 - Show data in MongoDB Compass
 
@@ -245,6 +249,7 @@ In this architecture:
 - Show ML training (if time)
 - Show analytics export
 - Show response time metrics
+- Optional: export CSV and point out tag_* columns (patient_id, location, processed_by)
 
 **Total: ~8 minutes**
 
@@ -275,11 +280,12 @@ In this architecture:
 ## 💡 Key Points to Emphasize
 
 1. **Edge Processing**: Happens BEFORE gateway, reduces bandwidth, improves reliability
-2. **ML-Based Decisions**: Uses trained models for health status prediction
-3. **Actuator Response**: Automatic response to health conditions
-4. **Data Warehouse**: All data stored in MongoDB for analysis
-5. **Real-Time Dashboard**: Live updates of vital signs and system status
-6. **Emergency Handling**: Automatic detection and response to critical conditions
+2. **Designated Sensor Edge**: SpO2 can be processed at the sensor tier before gateway
+3. **ML-Based Decisions**: Uses trained models for health status prediction
+4. **Actuator Response**: Automatic response to health conditions
+5. **Data Warehouse**: All data stored in MongoDB for analysis
+6. **Real-Time Dashboard**: Live updates of vital signs and system status
+7. **Emergency Handling**: Automatic detection and response to critical conditions
 
 ---
 
@@ -298,4 +304,3 @@ Let me start continuous monitoring to show how the system operates over time..."
 ---
 
 Good luck with your demo! 🚀
-

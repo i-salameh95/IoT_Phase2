@@ -6,7 +6,7 @@
 
 ```bash
 # Navigate to project directory
-cd /Users/israasalameh/Documents/y3.1\ IOT/Project-P1/IoTSimulator_P1
+cd "/Users/israasalameh/Documents/y3.1 IOT/IoTSimulator_P1/IoTSimulator_P1"
 
 # Start all services (MongoDB, Django Backend, Frontend)
 docker-compose up -d
@@ -22,6 +22,7 @@ docker-compose ps
 - **API Documentation**: http://localhost:8000/api/v1/
 - **Django Admin**: http://localhost:8000/admin
 - **MQTT Broker**: localhost:1883
+- **Dashboard panels**: Vital Signs + Environment Sensors (ambient temp, humidity, CO2, light, motion, sound)
 
 ### Step 3: Run a Simulation Cycle
 
@@ -114,6 +115,16 @@ curl "http://localhost:8000/api/v1/analytics/export?measurement=heart_rate&forma
 curl "http://localhost:8000/api/v1/analytics/export?measurement=heart_rate&format=csv" \
   --output heart_rate.csv
 ```
+Exports include flattened tag columns (patient_id, location, device_type, processed_by) and ISO timestamps for CSV.
+
+### 4. Train ML Model (Optional)
+
+```bash
+# Train (or force retrain) the default model
+curl -X POST http://localhost:8000/api/v1/ml/train \
+  -H "Content-Type: application/json" \
+  -d '{"algorithm": "random_forest", "force_retrain": true}'
+```
 
 ### 4. View in MongoDB Compass
 
@@ -185,7 +196,4 @@ docker-compose exec django_backend python manage.py shell
 
 # Run Django migrations
 docker-compose exec django_backend python manage.py migrate
-
-
--------
-
+```

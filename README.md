@@ -4,7 +4,7 @@
 
 ## 1. Executive Summary
 
-- **Scope**: Health Monitoring IoT System with health sensors (heart rate, blood pressure, temperature, SpO2, glucose), health actuators (alert system, medication dispenser, emergency call), ML-based decision making, and edge processing.
+- **Scope**: Health Monitoring IoT System with health sensors (vitals + environmental: heart rate, BP, temperature, SpO2, glucose, steps, ambient temp, humidity, CO2, light, motion, sound), health actuators (alert system, medication dispenser, emergency call), ML-based decision making, and edge processing.
 - **Features**: Health monitoring simulation cycles, historical queries, actuator monitoring, centralized logging, MongoDB data warehouse, Dockerized deployment, HTML/CSS/JS dashboard, ML service, analytics export.
 - **Data Flow**: Health Sensors → Edge Processor (Python) → Django Cloud → ML Model → Controller → Actuators → MongoDB → Dashboard.
 - **Why it matters**: Demonstrates IoT principles for healthcare (data acquisition, edge processing, ML-based decision making, actuation, visualization) with production-ready architecture.
@@ -44,7 +44,7 @@ Health Sensors (simulated) ─┐
 
 ### Architecture Components Explained:
 
-1. **Health Sensors (Simulated)**: Generate health data (heart rate, BP, temperature, etc.)
+1. **Health Sensors (Simulated)**: Generate health data (vitals + room environment)
 2. **Edge Processor**: Python service that processes data BEFORE it reaches the gateway:
    - Filters noise (moving average)
    - Detects outliers (IQR method)
@@ -61,7 +61,7 @@ Health Sensors (simulated) ─┐
    - `actuator_states`: Actuator state history
    - `response_times`: Performance metrics
    - `logs`: System event logs
-5. **Frontend Dashboard**: Real-time visualization of system state
+5. **Frontend Dashboard**: Real-time visualization of vital signs and environment sensors
 
 ---
 
@@ -111,9 +111,10 @@ IoTSimulator_P1/
 
 ### 5.1 Health Sensor Simulator (`app/services/health_sensor_simulator.py`)
 - Generates health sensor readings for patient devices
-- **Sensors**: Heart Rate (60-100 bpm), Blood Pressure (120/80 mmHg), Body Temperature (36.1-37.2°C), Oxygen Saturation (95-100%), Glucose Level (70-100 mg/dL), Activity Steps
+- **Sensors**: Heart Rate, BP (sys/dia), Body Temperature, SpO2, Glucose, Activity Steps, Ambient Temperature, Humidity, Light, Motion, CO2, Sound
 - **Devices**: `patient_001_wearable`, `patient_001_bedside`, `patient_001_glucose`, etc.
 - Supports emergency scenario simulation
+- **Designated sensor-edge**: `oxygen_saturation` performs sensor-side filtering before gateway ingestion
 
 ### 5.2 Health Simulation Engine (`app/services/health_simulation_engine.py`)
 1. Generate health sensor readings for all patient devices
@@ -138,6 +139,7 @@ IoTSimulator_P1/
 - **Outlier Detection**: IQR-based outlier detection
 - **Range Validation**: Validates sensor values against medical thresholds
 - **Anomaly Detection**: Detects health anomalies (bradycardia, hypoxia, fever, etc.)
+- **Sensor-side edge tier**: SpO2 readings can be filtered at the sensor layer before gateway processing
 
 ### 5.5 Logging & Storage (`app/core/logger.py`, `app/core/mongodb_client.py`)
 - Unified logging API writes to MongoDB when available, otherwise to CSV
@@ -257,6 +259,8 @@ python manage.py migrate
 12. **CO2 Level** - 400-1000 ppm (normal), 350-5000 ppm (full range)
 13. **Sound Level** - 30-60 dB (normal), 10-120 dB (full range)
 
+Note: SpO2 is the designated sensor-edge type that can filter readings before gateway processing.
+
 ### Patient Devices:
 - `patient_001_wearable` - Heart Rate, SpO2, Temperature, Activity
 - `patient_001_bedside` - Blood Pressure, Temperature
@@ -289,9 +293,10 @@ The edge processor performs initial data processing before data reaches the clou
 
 ### Processing Flow:
 1. Raw sensor readings are generated
-2. Edge processor filters and validates data
-3. Processed readings are stored in MongoDB
-4. ML model and controller use processed data for decisions
+2. Designated sensor-edge (SpO2) may filter readings before gateway
+3. Edge processor filters and validates remaining data
+4. Processed readings are stored in MongoDB
+5. ML model and controller use processed data for decisions
 
 ---
 
@@ -312,14 +317,14 @@ Delete CSV files to start fresh; the backend will recreate them automatically.
 
 ### ✅ Completed:
 - Django backend migration
-- Health monitoring sensors (7 types)
+- Health monitoring sensors (13 types: vitals + environment)
 - Health monitoring actuators (4 types)
 - Health simulation engine with response time tracking
-- Edge processing service (Python)
+- Edge processing service (Python) + designated sensor-side filtering
 - Docker Compose setup
 - HTML/CSS/JS frontend dashboard
 - **ML service (health status prediction with multi-algorithm comparison)** ✨
-- Analytics & data export (Excel/CSV)
+- Analytics & data export (Excel/CSV with flattened tag columns)
 - Response time evaluation
 
 ### Future Enhancements:
@@ -333,9 +338,9 @@ Delete CSV files to start fresh; the backend will recreate them automatically.
 ## 13. Development Notes & Future Work
 
 - **Current**: ML-based and rule-based decision making (ML automatically used when trained)
-- **ML Service**: Health status prediction (Normal/Warning/Critical) with multi-algorithm comparison (Random Forest, Gradient Boosting, SVM, Logistic Regression, KNN, Naive Bayes, Decision Tree, AdaBoost)
+- **ML Service**: Health status prediction (Normal/Warning/Critical) with multi-algorithm comparison (Random Forest, Gradient Boosting, SVM, Logistic Regression, KNN, Naive Bayes, Decision Tree, AdaBoost); features include vitals + ambient temp + CO2
 - **Response Time Evaluation**: Full instrumentation and reporting for all pipeline stages (sensor generation, edge processing, storage, ML prediction, actuator decision)
-- **Analytics Export**: Excel/CSV export and descriptive analytics (mean, median, std, percentiles)
+- **Analytics Export**: Excel/CSV export and descriptive analytics (mean, median, std, percentiles) with ISO timestamps and flattened tags (patient_id, location, device_type, processed_by)
 - **Edge Processing**: Python-based edge processor with noise filtering, outlier detection, range validation, and anomaly detection
 - **Future**: Real device integration, advanced ML models, cloud deployment
 - **Performance**: MongoDB indexes optimized for time-range queries
@@ -386,8 +391,9 @@ curl -X POST http://localhost:8000/api/v1/sensors/query/historical \
 
 - **Phase 1**: Smart Home IoT Simulator (completed)
 - **Phase 2**: Health Monitoring IoT System with ML (current)
-  - Additional sensor types ✅
+  - Additional sensor types (vitals + environment) ✅
   - Edge processing (Python service) ✅
+  - Designated sensor-side edge filtering (SpO2) ✅
   - Data conversion for analytics (Excel/CSV export) ✅
   - ML model for decision making ✅
   - Prescriptive analysis (ML predictions guide actuator decisions) ✅

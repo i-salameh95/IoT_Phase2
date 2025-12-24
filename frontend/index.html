@@ -276,7 +276,7 @@
     <section class="panel">
         <div class="panel-header">
             <h2><span class="section-icon icon-env"></span>Environment Sensors</h2>
-            <p class="muted-text">Room conditions that impact patient safety</p>
+            <p class="muted-text">Room conditions (ambient temp, humidity, CO2) that impact patient safety</p>
         </div>
         <div class="cards-grid env-grid">
             <div class="card compact" id="card-ambient-temperature">
@@ -299,6 +299,16 @@
                 <div class="card-normal-range">Normal: 30-60%</div>
             </div>
 
+            <div class="card compact" id="card-co2">
+                <div class="card-header">
+                    <h3>CO2</h3>
+                    <span class="card-status" id="status-co2">-</span>
+                </div>
+                <div class="card-value" id="value-co2">--</div>
+                <div class="card-unit">ppm</div>
+                <div class="card-normal-range">Normal: 400-1000 ppm</div>
+            </div>
+
             <div class="card compact" id="card-light">
                 <div class="card-header">
                     <h3>Light Level</h3>
@@ -317,16 +327,6 @@
                 <div class="card-value" id="value-motion">--</div>
                 <div class="card-unit">detected</div>
                 <div class="card-normal-range">0 = none, 1 = detected</div>
-            </div>
-
-            <div class="card compact" id="card-co2">
-                <div class="card-header">
-                    <h3>CO2</h3>
-                    <span class="card-status" id="status-co2">-</span>
-                </div>
-                <div class="card-value" id="value-co2">--</div>
-                <div class="card-unit">ppm</div>
-                <div class="card-normal-range">Normal: 400-1000 ppm</div>
             </div>
 
             <div class="card compact" id="card-sound">
@@ -429,9 +429,9 @@
                         <select id="chart-sensor-env">
                             <option value="ambient_temperature">Room Temperature</option>
                             <option value="humidity">Humidity</option>
+                            <option value="co2_level">CO2</option>
                             <option value="light_level">Light Level</option>
                             <option value="motion_detected">Motion</option>
-                            <option value="co2_level">CO2</option>
                             <option value="sound_level">Sound Level</option>
                         </select>
                     </label>

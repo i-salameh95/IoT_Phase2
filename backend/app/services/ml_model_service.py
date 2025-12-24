@@ -115,6 +115,8 @@ class HealthStatusMLModel:
             "oxygen_saturation",
             "glucose_level",
             "activity_steps",
+            "ambient_temperature",
+            "co2_level",
         ]
         # Labels are integers: 0,1,2
         self.class_names = ["Normal", "Warning", "Critical"]
@@ -236,6 +238,7 @@ class HealthStatusMLModel:
         training_data: Optional[pd.DataFrame] = None,
         split: Tuple[float, float, float] = (0.7, 0.1, 0.2),
         algorithm: str = "random_forest",
+        force_retrain: bool = False,
         cv_folds: int = 5,
         random_state: int = 42,
     ) -> Dict:
@@ -249,6 +252,19 @@ class HealthStatusMLModel:
             cv_folds: StratifiedKFold folds
         """
         try:
+            if (
+                self.is_trained
+                and not force_retrain
+                and algorithm == self.current_algorithm
+                and training_data is None
+            ):
+                return {
+                    "status": "skipped",
+                    "message": "Model already trained. Set force_retrain=true to retrain.",
+                    "algorithm": self.current_algorithm,
+                    "algorithm_name": self.AVAILABLE_ALGORITHMS.get(self.current_algorithm, {}).get("name", "Unknown"),
+                    "metrics": self.model_metrics.get(self.current_algorithm, {}),
+                }
             if algorithm not in self.AVAILABLE_ALGORITHMS:
                 return {"status": "error", "message": f"Unknown algorithm: {algorithm}"}
 
@@ -448,6 +464,7 @@ class HealthStatusMLModel:
                     training_data=training_data,
                     split=split,
                     algorithm=algo,
+                    force_retrain=True,
                     cv_folds=cv_folds,
                     random_state=random_state,
                 )
@@ -574,7 +591,7 @@ class HealthStatusMLModel:
 
                 samples = []
                 for (pid, bucket), meas_map in grouped.items():
-                    # Require at least 5 vital types for a valid sample
+                    # Require at least 5 measurements for a valid sample
                     present = sum(1 for m in self.feature_names if m in meas_map and len(meas_map[m]) > 0)
                     if present < 5:
                         continue
@@ -632,6 +649,8 @@ class HealthStatusMLModel:
             spo2 = np.random.normal(98, 3)
             glucose = np.random.normal(95, 20)
             activity = np.random.normal(5000, 2000)
+            ambient = np.random.normal(22, 2)
+            co2 = np.random.normal(700, 150)
 
             label = int(self._determine_health_status(hr, bp_sys, bp_dia, temp, spo2, glucose))
 
@@ -643,6 +662,8 @@ class HealthStatusMLModel:
                 "oxygen_saturation": float(max(70, min(100, spo2))),
                 "glucose_level": float(max(40, min(400, glucose))),
                 "activity_steps": float(max(0, activity)),
+                "ambient_temperature": float(max(15, min(30, ambient))),
+                "co2_level": float(max(350, min(2000, co2))),
                 "health_status_label": label,
             })
 
@@ -736,6 +757,16 @@ class HealthStatusMLModel:
                 if os.path.exists(self.META_FILE):
                     with open(self.META_FILE, "r") as f:
                         meta = json.load(f)
+                    meta_features = meta.get("feature_names")
+                    if meta_features and meta_features != self.feature_names:
+                        iot_logger.warning(
+                            "Loaded ML model feature set does not match current feature_names; retrain required.",
+                            source="ml_service",
+                        )
+                        self.model = None
+                        self.scaler = StandardScaler()
+                        self.is_trained = False
+                        return
                     self.current_algorithm = meta.get("algorithm", "random_forest")
                     self.feature_medians_ = meta.get("feature_medians")
                     if "metrics" in meta:

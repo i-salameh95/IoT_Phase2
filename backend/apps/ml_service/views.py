@@ -95,6 +95,7 @@ def train_model(request):
             # Train model
             result = health_ml_model.train(
                 algorithm=algorithm,
+                force_retrain=force_retrain,
                 split=(0.7, max(0.0, 1.0 - (0.7 + test_size)), test_size)
             )
             

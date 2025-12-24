@@ -4,6 +4,7 @@ Centralized logging service with MongoDB or CSV backend
 from datetime import datetime
 from typing import Optional
 from app.models.log import LogEntry, LogLevel
+from pymongo.errors import PyMongoError
 
 
 class IoTLogger:
@@ -21,6 +22,25 @@ class IoTLogger:
             self.collection.create_index([("source", 1), ("timestamp", -1)])
         else:
             self.csv_storage = mongodb_service.csv_storage
+
+    def _switch_to_csv(self) -> None:
+        self.use_mongo = False
+        self.csv_storage = self.mongodb_service.csv_storage
+        self.collection = None
+
+    def _try_reconnect(self) -> bool:
+        if not self.mongodb_service.ensure_available():
+            return False
+        try:
+            self.collection = self.mongodb_service.db.logs
+            self.collection.create_index([("timestamp", -1)])
+            self.collection.create_index([("level", 1), ("timestamp", -1)])
+            self.collection.create_index([("source", 1), ("timestamp", -1)])
+            self.use_mongo = True
+            return True
+        except PyMongoError:
+            self._switch_to_csv()
+            return False
     
     def log(
         self,
@@ -63,10 +83,20 @@ class IoTLogger:
         if metadata:
             log_entry["metadata"] = metadata
         
+        if self.use_mongo and not self.mongodb_service.available:
+            self._switch_to_csv()
+        if not self.use_mongo:
+            self._try_reconnect()
+
         if self.use_mongo:
-            self.collection.insert_one(log_entry)
-        else:
-            self.csv_storage.write_log(log_entry)
+            try:
+                self.collection.insert_one(log_entry)
+                return
+            except PyMongoError:
+                self.mongodb_service.available = False
+                self._switch_to_csv()
+
+        self.csv_storage.write_log(log_entry)
     
     def debug(self, message: str, source: str, **kwargs):
         """Log debug message"""
@@ -151,4 +181,3 @@ class _LazyLogger:
         return getattr(get_logger(), name)
 
 iot_logger = _LazyLogger()
-

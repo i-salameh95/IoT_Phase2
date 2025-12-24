@@ -125,7 +125,18 @@ class HealthSimulationEngine:
 
         # Step 2: Edge Processing
         edge_start = time.time()
-        processed_readings = self.edge_processor.process_batch(all_readings)
+        already_processed = []
+        raw_readings = []
+        for reading in all_readings:
+            tags = (reading.tags or {})
+            if tags.get("processed_by") == "sensor_edge":
+                already_processed.append(reading)
+            else:
+                raw_readings.append(reading)
+
+        processed_readings = self.edge_processor.process_batch(raw_readings)
+        if already_processed:
+            processed_readings = already_processed + processed_readings
 
         # Build raw->processed mapping for UI traceability
         raw_map = {self._reading_key(r): r for r in all_readings}

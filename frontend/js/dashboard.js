@@ -40,9 +40,9 @@ const VITAL_MEASUREMENTS = [
 const ENV_MEASUREMENTS = [
   'ambient_temperature',
   'humidity',
+  'co2_level',
   'light_level',
   'motion_detected',
-  'co2_level',
   'sound_level'
 ];
 

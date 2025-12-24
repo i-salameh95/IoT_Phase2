@@ -2,6 +2,7 @@
 MongoDB client configuration and CSV fallback utilities for sensor data storage
 """
 from datetime import datetime, timedelta
+import time
 from typing import List, Dict, Optional
 
 from pymongo import MongoClient
@@ -18,6 +19,8 @@ class MongoDBService:
     def __init__(self):
         self.csv_storage = CSVStorage()
         self.available = False
+        self._reconnect_interval_sec = 5.0
+        self._last_reconnect_attempt = 0.0
         try:
             self.client = MongoClient(
                 settings.MONGODB_URL,
@@ -26,39 +29,87 @@ class MongoDBService:
             # Trigger connection
             self.client.admin.command("ping")
             self.db = self.client[settings.MONGODB_DATABASE]
-            self.collection = self.db.sensor_readings
-            self.collection.create_index([("measurement", 1), ("timestamp", -1)])
-            self.collection.create_index([("device_id", 1), ("timestamp", -1)])
-            self.collection.create_index([("sensor_id", 1), ("timestamp", -1)])
-            self.collection.create_index("timestamp")
-            self.available = True
+            self._setup_collections()
         except PyMongoError:
             self.client = None
             self.db = None
             self.collection = None
-        
-        # Actuator states collection
-        if self.available:
-            try:
-                self.actuator_collection = self.db.actuator_states
-                self.actuator_collection.create_index([("actuator_id", 1), ("timestamp", -1)])
-                self.actuator_collection.create_index("timestamp")
-            except Exception:
-                self.actuator_collection = None
-        else:
             self.actuator_collection = None
-        
-        # Response times collection
-        if self.available:
-            try:
-                self.response_times_collection = self.db.response_times
-                self.response_times_collection.create_index([("timestamp", -1)])
-                self.response_times_collection.create_index([("timestamp_dt", -1)])  # For datetime queries
-                self.response_times_collection.create_index([("cycle", -1)])
-            except Exception:
-                self.response_times_collection = None
-        else:
             self.response_times_collection = None
+
+    def _setup_collections(self) -> None:
+        self.collection = self.db.sensor_readings
+        self.collection.create_index([("measurement", 1), ("timestamp", -1)])
+        self.collection.create_index([("device_id", 1), ("timestamp", -1)])
+        self.collection.create_index([("sensor_id", 1), ("timestamp", -1)])
+        self.collection.create_index("timestamp")
+        self.available = True
+
+        try:
+            self.actuator_collection = self.db.actuator_states
+            self.actuator_collection.create_index([("actuator_id", 1), ("timestamp", -1)])
+            self.actuator_collection.create_index("timestamp")
+        except Exception:
+            self.actuator_collection = None
+
+        try:
+            self.response_times_collection = self.db.response_times
+            self.response_times_collection.create_index([("timestamp", -1)])
+            self.response_times_collection.create_index([("timestamp_dt", -1)])  # For datetime queries
+            self.response_times_collection.create_index([("cycle", -1)])
+        except Exception:
+            self.response_times_collection = None
+
+    def _attempt_reconnect(self) -> bool:
+        now = time.time()
+        if now - self._last_reconnect_attempt < self._reconnect_interval_sec:
+            return False
+        self._last_reconnect_attempt = now
+        try:
+            self.client = MongoClient(
+                settings.MONGODB_URL,
+                serverSelectionTimeoutMS=2000
+            )
+            self.client.admin.command("ping")
+            self.db = self.client[settings.MONGODB_DATABASE]
+            self._setup_collections()
+            iot_logger.info(
+                "MongoDB reconnected; switching back to MongoDB storage.",
+                source="mongodb_client"
+            )
+            return True
+        except PyMongoError as e:
+            self._mark_unavailable(e, "reconnect", log_warning=False)
+            return False
+
+    def _ensure_available(self) -> bool:
+        if self.available:
+            return True
+        return self._attempt_reconnect()
+
+    def ensure_available(self) -> bool:
+        return self._ensure_available()
+
+    def _mark_unavailable(self, error: Exception, context: str, log_warning: bool = True) -> None:
+        was_available = self.available
+        self.available = False
+        self._last_reconnect_attempt = time.time()
+        self.collection = None
+        self.actuator_collection = None
+        self.response_times_collection = None
+        self.db = None
+        if self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
+        if was_available and log_warning:
+            iot_logger.warning(
+                f"MongoDB unavailable during {context}; switching to CSV fallback.",
+                source="mongodb_client",
+                metadata={"error": str(error)}
+            )
     
     def write_sensor_data(
         self,
@@ -72,7 +123,18 @@ class MongoDBService:
         if timestamp is None:
             timestamp = int(datetime.utcnow().timestamp())
 
-        if not self.available:
+        if not self._ensure_available():
+            self.csv_storage.write_sensor_data(
+                measurement=measurement,
+                device_id=device_id,
+                sensor_id=sensor_id,
+                value=value,
+                timestamp=timestamp,
+                tags=tags
+            )
+            return
+
+        if self.collection is None:
             self.csv_storage.write_sensor_data(
                 measurement=measurement,
                 device_id=device_id,
@@ -98,7 +160,18 @@ class MongoDBService:
         if tags:
             document.update({f"tag_{k}": v for k, v in tags.items()})
 
-        self.collection.insert_one(document)
+        try:
+            self.collection.insert_one(document)
+        except PyMongoError as e:
+            self._mark_unavailable(e, "write_sensor_data")
+            self.csv_storage.write_sensor_data(
+                measurement=measurement,
+                device_id=device_id,
+                sensor_id=sensor_id,
+                value=value,
+                timestamp=timestamp,
+                tags=tags
+            )
 
     
     def query_sensor_data(
@@ -134,7 +207,7 @@ class MongoDBService:
             start_ts = None
         stop_ts = int(self._parse_datetime(stop_time).timestamp()) if stop_time else None
         
-        if not self.available:
+        if not self._ensure_available():
             return self.csv_storage.query_sensor_data(
                 measurement=measurement,
                 device_id=device_id,
@@ -156,21 +229,32 @@ class MongoDBService:
         if sensor_id:
             query["sensor_id"] = sensor_id
 
-        cursor = self.collection.find(query).sort("timestamp", -1).limit(limit)
+        try:
+            cursor = self.collection.find(query).sort("timestamp", -1).limit(limit)
 
-        data = []
-        for doc in cursor:
-            data.append({
-                "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
-                "measurement": doc["measurement"],
-                "device_id": doc["device_id"],
-                "sensor_id": doc["sensor_id"],
-                "value": doc["value"],
-                # IMPORTANT: provide tags for ML service if needed
-                "tags": doc.get("tags", {})
-            })
+            data = []
+            for doc in cursor:
+                data.append({
+                    "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
+                    "measurement": doc["measurement"],
+                    "device_id": doc["device_id"],
+                    "sensor_id": doc["sensor_id"],
+                    "value": doc["value"],
+                    # IMPORTANT: provide tags for ML service if needed
+                    "tags": doc.get("tags", {})
+                })
 
-        return list(reversed(data))
+            return list(reversed(data))
+        except PyMongoError as e:
+            self._mark_unavailable(e, "query_sensor_data")
+            return self.csv_storage.query_sensor_data(
+                measurement=measurement,
+                device_id=device_id,
+                sensor_id=sensor_id,
+                start_time=start_ts,
+                stop_time=stop_ts,
+                limit=limit
+            )
 
 
     def get_aggregated_data(
@@ -191,7 +275,7 @@ class MongoDBService:
                 window: Time window (e.g., "1h", "5m")
                 aggregate: Aggregation function (mean, max, min, sum)
             """
-            if not self.available:
+            if not self._ensure_available():
                 return self.csv_storage.get_aggregated_data(
                     measurement=measurement,
                     device_id=device_id,
@@ -256,7 +340,17 @@ class MongoDBService:
                 {"$sort": {"_id": 1}}
             ]
 
-            results = list(self.collection.aggregate(pipeline))
+            try:
+                results = list(self.collection.aggregate(pipeline))
+            except PyMongoError as e:
+                self._mark_unavailable(e, "get_aggregated_data")
+                return self.csv_storage.get_aggregated_data(
+                    measurement=measurement,
+                    device_id=device_id,
+                    sensor_id=sensor_id,
+                    window=window,
+                    aggregate=aggregate
+                )
 
             data = []
             for result in results:
@@ -273,15 +367,23 @@ class MongoDBService:
 
     def get_distinct_measurements(self) -> List[str]:
         """Get list of distinct measurement types"""
-        if not self.available:
+        if not self._ensure_available():
             return self.csv_storage.get_distinct_measurements()
-        return self.collection.distinct("measurement")
+        try:
+            return self.collection.distinct("measurement")
+        except PyMongoError as e:
+            self._mark_unavailable(e, "get_distinct_measurements")
+            return self.csv_storage.get_distinct_measurements()
     
     def get_distinct_devices(self) -> List[str]:
         """Get list of distinct device IDs"""
-        if not self.available:
+        if not self._ensure_available():
             return self.csv_storage.get_distinct_devices()
-        return self.collection.distinct("device_id")
+        try:
+            return self.collection.distinct("device_id")
+        except PyMongoError as e:
+            self._mark_unavailable(e, "get_distinct_devices")
+            return self.csv_storage.get_distinct_devices()
     
     def write_actuator_state(self, actuator_state):
         """
@@ -291,7 +393,7 @@ class MongoDBService:
             actuator_state: ActuatorState object
         """
         timestamp = actuator_state.timestamp or int(datetime.utcnow().timestamp())
-        if not self.available:
+        if not self._ensure_available():
             self.csv_storage.write_actuator_state(
                 actuator_id=actuator_state.actuator_id,
                 device_id=actuator_state.device_id,
@@ -319,7 +421,19 @@ class MongoDBService:
         if actuator_state.tags:
             document.update({f"tag_{k}": v for k, v in actuator_state.tags.items()})
         
-        self.actuator_collection.insert_one(document)
+        try:
+            self.actuator_collection.insert_one(document)
+        except PyMongoError as e:
+            self._mark_unavailable(e, "write_actuator_state")
+            self.csv_storage.write_actuator_state(
+                actuator_id=actuator_state.actuator_id,
+                device_id=actuator_state.device_id,
+                actuator_type=actuator_state.actuator_type,
+                state=actuator_state.state,
+                value=actuator_state.value,
+                timestamp=timestamp,
+                tags=actuator_state.tags
+            )
     
     def get_actuator_states(
         self,
@@ -335,7 +449,7 @@ class MongoDBService:
             device_id: Filter by device_id (optional)
             limit: Maximum number of records to return
         """
-        if not self.available:
+        if not self._ensure_available():
             return self.csv_storage.get_actuator_states(
                 actuator_id=actuator_id,
                 device_id=device_id,
@@ -353,24 +467,32 @@ class MongoDBService:
         if device_id:
             query["device_id"] = device_id
         
-        cursor = collection.find(query).sort("timestamp", -1).limit(limit)
-        
-        data = []
-        for doc in cursor:
-            data.append({
-                "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
-                "actuator_id": doc["actuator_id"],
-                "device_id": doc["device_id"],
-                "actuator_type": doc["actuator_type"],
-                "state": doc["state"],
-                "value": doc.get("value")
-            })
-        
-        return list(reversed(data))
+        try:
+            cursor = collection.find(query).sort("timestamp", -1).limit(limit)
+
+            data = []
+            for doc in cursor:
+                data.append({
+                    "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
+                    "actuator_id": doc["actuator_id"],
+                    "device_id": doc["device_id"],
+                    "actuator_type": doc["actuator_type"],
+                    "state": doc["state"],
+                    "value": doc.get("value")
+                })
+
+            return list(reversed(data))
+        except PyMongoError as e:
+            self._mark_unavailable(e, "get_actuator_states")
+            return self.csv_storage.get_actuator_states(
+                actuator_id=actuator_id,
+                device_id=device_id,
+                limit=limit
+            )
     
     def get_current_actuator_states(self) -> List[Dict]:
         """Get the most recent state of each actuator (only active ones from recent cycles)"""
-        if not self.available:
+        if not self._ensure_available():
             return self.csv_storage.get_current_actuator_states()
         
         if self.actuator_collection is None:
@@ -401,24 +523,28 @@ class MongoDBService:
         ]
         
         current_states = []
-        for result in self.actuator_collection.aggregate(pipeline):
-            doc = result["doc"]
-            # Only include if state is ON/ACTIVE or very recent (within 5 min)
-            state = doc["state"]
-            timestamp = doc["timestamp"]
-            is_recent = timestamp >= five_minutes_ago
-            
-            if state in ["ON", "ACTIVE"] or is_recent:
-                current_states.append({
-                    "actuator_id": doc["actuator_id"],
-                    "device_id": doc["device_id"],
-                    "actuator_type": doc["actuator_type"],
-                    "state": state,
-                    "value": doc.get("value"),
-                    "time": datetime.utcfromtimestamp(timestamp).isoformat() + "Z"
-                })
-        
-        return current_states
+        try:
+            for result in self.actuator_collection.aggregate(pipeline):
+                doc = result["doc"]
+                # Only include if state is ON/ACTIVE or very recent (within 5 min)
+                state = doc["state"]
+                timestamp = doc["timestamp"]
+                is_recent = timestamp >= five_minutes_ago
+
+                if state in ["ON", "ACTIVE"] or is_recent:
+                    current_states.append({
+                        "actuator_id": doc["actuator_id"],
+                        "device_id": doc["device_id"],
+                        "actuator_type": doc["actuator_type"],
+                        "state": state,
+                        "value": doc.get("value"),
+                        "time": datetime.utcfromtimestamp(timestamp).isoformat() + "Z"
+                    })
+
+            return current_states
+        except PyMongoError as e:
+            self._mark_unavailable(e, "get_current_actuator_states")
+            return self.csv_storage.get_current_actuator_states()
     
     def write_response_times(self, cycle: int, response_times: dict, patient_id: str = None):
         """
@@ -432,7 +558,7 @@ class MongoDBService:
         Returns:
             bool: True if stored successfully, False otherwise
         """
-        if not self.available or self.response_times_collection is None:
+        if not self._ensure_available() or self.response_times_collection is None:
             # Log warning once to help debugging
             if not hasattr(self, '_response_times_warning_logged'):
                 iot_logger.warning(
@@ -458,6 +584,9 @@ class MongoDBService:
             }
             self.response_times_collection.insert_one(doc)
             return True
+        except PyMongoError as e:
+            self._mark_unavailable(e, "write_response_times")
+            return False
         except Exception as e:
             iot_logger.warning(
                 f"Failed to store response times: {str(e)}",
@@ -477,7 +606,7 @@ class MongoDBService:
         Returns:
             List of dictionaries with response time data
         """
-        if not self.available or self.response_times_collection is None:
+        if not self._ensure_available() or self.response_times_collection is None:
             # Log warning once to help debugging
             if not hasattr(self, '_response_times_query_warning_logged'):
                 iot_logger.warning(
@@ -496,9 +625,9 @@ class MongoDBService:
                     query["timestamp_dt"]["$gte"] = start_time
                 if end_time:
                     query["timestamp_dt"]["$lte"] = end_time
-            
+
             cursor = self.response_times_collection.find(query).sort("timestamp", -1).limit(limit)
-            
+
             # Convert to list and ensure all expected keys are present
             results = []
             for doc in cursor:
@@ -514,8 +643,11 @@ class MongoDBService:
                     "patient_id": doc.get("patient_id", "all")
                 }
                 results.append(result)
-            
+
             return results
+        except PyMongoError as e:
+            self._mark_unavailable(e, "query_response_times")
+            return []
         except Exception as e:
             # Log warning to help debugging
             if not hasattr(self, '_response_times_query_exception_logged'):
@@ -533,7 +665,7 @@ class MongoDBService:
 
     def clear_all_data(self):
         """Clear sensor, actuator, response time, and logs data."""
-        if not self.available:
+        if not self._ensure_available():
             self.csv_storage.clear_all()
             return True
 
@@ -548,6 +680,10 @@ class MongoDBService:
                 self.db.logs.delete_many({})
             except Exception:
                 pass
+            return True
+        except PyMongoError as e:
+            self._mark_unavailable(e, "clear_all_data")
+            self.csv_storage.clear_all()
             return True
         except Exception:
             return False
