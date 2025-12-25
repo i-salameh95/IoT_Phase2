@@ -116,11 +116,12 @@
                         </tr>
                         </tbody>
                     </table>
-                    <div class="fine-print">Processed values reflect edge filtering before reaching the gateway.</div>
+                    <div class="fine-print">Edge policy: only physically impossible values are dropped. Critical values pass through; outliers are flagged.</div>
                     <div class="flag-legend">
                         <span class="flag-badge normal">OK</span>
                         <span class="flag-badge warning">WARN</span>
                         <span class="flag-badge critical">CRIT</span>
+                        <span class="flag-badge warning">OUTLIER</span>
                         <span class="flag-badge filtered">FILTERED</span>
                     </div>
                 </div>

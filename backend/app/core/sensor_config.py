@@ -33,3 +33,12 @@ SENSOR_NORMAL_RANGES = {
     "co2_level": (400, 1000),
     "sound_level": (30, 60),
 }
+
+SENSOR_CRITICAL_LIMITS = {
+    "heart_rate": (50, 150),
+    "blood_pressure_systolic": (80, 180),
+    "blood_pressure_diastolic": (50, 120),
+    "body_temperature": (35.0, 39.5),
+    "oxygen_saturation": (85, None),
+    "glucose_level": (50, 250),
+}

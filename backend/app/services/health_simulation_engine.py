@@ -161,7 +161,9 @@ class HealthSimulationEngine:
                 "patient_id": pid,
                 "value": (raw_r.value if raw_r else None),
                 "processed_value": (proc_r.value if proc_r else None),
-                "filtered_out": proc_r is None
+                "filtered_out": proc_r is None,
+                "critical_value": bool(tags.get("critical_value")),
+                "edge": tags.get("edge"),
             })
 
         edge_time = time.time()

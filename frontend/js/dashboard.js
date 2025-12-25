@@ -904,7 +904,16 @@ function renderLatestCycle(result) {
 
   readings.forEach(r => {
     const value = r.processed_value != null ? r.processed_value : r.value;
-    const status = r.filtered_out ? { label: 'FILTERED', class: 'filtered' } : getHealthStatus(r.measurement, value);
+    const edgeOutlier = Boolean(r.edge && r.edge.outlier_detection && r.edge.outlier_detection.flagged);
+    const criticalValue = Boolean(r.critical_value);
+    let status = getHealthStatus(r.measurement, value);
+    if (r.filtered_out) {
+      status = { label: 'FILTERED', class: 'filtered' };
+    } else if (edgeOutlier) {
+      status = { label: 'OUTLIER', class: 'warning' };
+    } else if (criticalValue) {
+      status = { label: 'CRIT', class: 'critical' };
+    }
     const rowClass = status.class === 'critical' ? 'row-critical' : status.class === 'warning' ? 'row-warning' : '';
     const tr = document.createElement('tr');
     if (rowClass) tr.className = rowClass;

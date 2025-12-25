@@ -9,7 +9,7 @@ from collections import deque
 
 from app.models.sensor import SensorReading
 from app.core.logger import iot_logger
-from app.core.sensor_config import SENSOR_VALID_RANGES
+from app.core.sensor_config import SENSOR_VALID_RANGES, SENSOR_CRITICAL_LIMITS
 
 
 class EdgeProcessor:
@@ -77,24 +77,44 @@ class EdgeProcessor:
 
         # 2) Noise filtering (moving average)
         filtered_value, noise_info = self._apply_noise_filter(reading, sensor_key)
+        critical_raw = self._is_critical_value(reading.measurement, reading.value)
+        if critical_raw:
+            filtered_value = reading.value
+            noise_info = {
+                "method": "moving_average",
+                "window_size": self.window_size,
+                "buffer_len": len(self.sensor_buffers.get(sensor_key, [])),
+                "applied": False,
+                "reason": "critical_bypass",
+            }
 
         # 3) Outlier detection (IQR) using history (do NOT mutate history before decision)
-        outlier_ok, outlier_info = self._detect_outlier(sensor_key, filtered_value)
-        if not outlier_ok:
-            iot_logger.warning(
-                f"Edge filter: outlier_detected for {reading.measurement} value={reading.value} filtered={filtered_value}",
-                source="edge_processor",
-                device_id=reading.device_id,
-                sensor_id=reading.sensor_id,
-                metadata={
-                    "measurement": reading.measurement,
-                    "value": reading.value,
-                    "filtered_value": filtered_value,
-                    "reason": "outlier_detected",
-                    **outlier_info,
-                },
-            )
-            return None
+        critical_filtered = self._is_critical_value(reading.measurement, filtered_value)
+        if critical_raw or critical_filtered:
+            outlier_ok = True
+            outlier_info = {
+                "method": "iqr",
+                "enabled": True,
+                "bypassed": True,
+                "reason": "critical_value",
+            }
+        else:
+            outlier_ok, outlier_info = self._detect_outlier(sensor_key, filtered_value)
+            if not outlier_ok:
+                outlier_info["flagged"] = True
+                iot_logger.warning(
+                    f"Edge outlier flagged for {reading.measurement} value={reading.value} filtered={filtered_value}",
+                    source="edge_processor",
+                    device_id=reading.device_id,
+                    sensor_id=reading.sensor_id,
+                    metadata={
+                        "measurement": reading.measurement,
+                        "value": reading.value,
+                        "filtered_value": filtered_value,
+                        "reason": "outlier_detected",
+                        **outlier_info,
+                    },
+                )
 
         # 4) Update history + stats only after passing filters
         self._update_history(sensor_key, filtered_value)
@@ -112,6 +132,7 @@ class EdgeProcessor:
             "original_value": reading.value,
             "filtered_value": filtered_value,
             "filtered": reading.value != filtered_value,
+            "critical_value": bool(critical_raw or critical_filtered),
         }
 
         return SensorReading(
@@ -198,6 +219,17 @@ class EdgeProcessor:
             "max": max_val,
             "ok": ok,
         }
+
+    def _is_critical_value(self, measurement: str, value: float) -> bool:
+        limits = SENSOR_CRITICAL_LIMITS.get(measurement)
+        if not limits:
+            return False
+        min_val, max_val = limits
+        if min_val is not None and value < min_val:
+            return True
+        if max_val is not None and value > max_val:
+            return True
+        return False
 
     def _apply_noise_filter(self, reading: SensorReading, sensor_key: str) -> Tuple[float, Dict]:
         """
