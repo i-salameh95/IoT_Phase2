@@ -53,10 +53,10 @@ def run_simulation(request):
         patient_id = request.data.get('patient_id')
         simulate_emergency = request.data.get('simulate_emergency', False)
 
-        if num_cycles < 1 or num_cycles > 100:
+        if num_cycles < 1 or num_cycles > 10000:
             return Response({
                 "status": "error",
-                "message": "num_cycles must be between 1 and 100"
+                "message": "num_cycles must be between 1 and 10000"
             }, status=status.HTTP_400_BAD_REQUEST)
 
         if delay_seconds < 0.1 or delay_seconds > 10.0:

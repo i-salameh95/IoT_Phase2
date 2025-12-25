@@ -2,6 +2,7 @@
 Health Monitoring Simulation Engine
 Runs simulation cycles for health monitoring IoT system
 """
+import random
 import time
 from typing import List, Optional, Dict, Any
 
@@ -308,12 +309,18 @@ class HealthSimulationEngine:
         results = []
         last_cycle_result = None
 
+        emergency_cycles = set()
+        if simulate_emergency and num_cycles > 0:
+            emergency_count = max(1, round(num_cycles * 0.1))
+            emergency_count = min(emergency_count, num_cycles)
+            emergency_cycles = set(random.sample(range(1, num_cycles + 1), k=emergency_count))
+
         for i in range(1, num_cycles + 1):
             if not self.is_running:
                 break
 
-            # Simulate emergency on cycle 10 (if enabled)-flag
-            emergency = bool(simulate_emergency and i == 10)
+            # Simulate multiple randomized emergency cycles (if enabled)
+            emergency = bool(simulate_emergency and i in emergency_cycles)
 
             last_cycle_result = self.run_cycle(
                 i,

@@ -7,6 +7,7 @@ import time
 from typing import List, Optional
 
 from app.models.sensor import SensorReading
+from app.core.sensor_config import SENSOR_NORMAL_RANGES
 
 
 class HealthSensorSimulator:
@@ -148,24 +149,7 @@ class HealthSensorSimulator:
             }
             return round(emergency_values.get(sensor_type, 0.0), 1)
         
-        # Normal ranges
-        normal_ranges = {
-            "heart_rate": (60, 100),  # bpm - normal resting heart rate
-            "blood_pressure_systolic": (90, 140),  # mmHg - normal systolic
-            "blood_pressure_diastolic": (60, 90),  # mmHg - normal diastolic
-            "body_temperature": (36.1, 37.2),  # C - normal body temperature
-            "oxygen_saturation": (95, 100),  # % - normal SpO2
-            "glucose_level": (70, 100),  # mg/dL - normal fasting glucose
-            "activity_steps": (0, 20000),  # steps per day
-            "ambient_temperature": (20.0, 24.0),  # room temperature (C)
-            "humidity": (30, 60),  # % RH
-            "light_level": (100, 800),  # lux
-            "motion_detected": (0, 1),  # boolean
-            "co2_level": (400, 1000),  # ppm
-            "sound_level": (30, 60),  # dB
-        }
-        
-        min_val, max_val = normal_ranges.get(sensor_type, (0, 100))
+        min_val, max_val = SENSOR_NORMAL_RANGES.get(sensor_type, (0, 100))
         if sensor_type == "motion_detected":
             value = float(random.choice([0, 1]))
         else:

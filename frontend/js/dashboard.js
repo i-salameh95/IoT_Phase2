@@ -4,7 +4,6 @@
 
 // Global state
 let isSimulationRunning = false;
-let updateInterval = null;
 let uiInterval = null;
 
 let currentPatientId = 'P001';
@@ -148,6 +147,14 @@ function getDeviceIdForMeasurement(measurement) {
   return `${prefix}_wearable`;
 }
 
+async function runCycleAndRefresh(patientId, simulateEmergency) {
+  const result = await api.runCycle(patientId, simulateEmergency);
+  lastCycleResult = result;
+  renderLatestCycle(result);
+  await updateDashboard({ force: true });
+  return result;
+}
+
 async function handleRunCycle() {
   const btn = document.getElementById('btn-start-cycle');
   if (btn) btn.disabled = true;
@@ -159,18 +166,13 @@ async function handleRunCycle() {
     setStatus(statusDiv, 'Running cycle...', 'info');
     setUiMode('manual');
 
-    const result = await api.runCycle(currentPatientId === 'all' ? null : currentPatientId, simulateEmergency);
-    lastCycleResult = result;
+    const result = await runCycleAndRefresh(currentPatientId === 'all' ? null : currentPatientId, simulateEmergency);
 
     setStatus(
       statusDiv,
       `Cycle ${result.cycle} completed. ${result.sensor_readings} readings, ${result.decisions_made} decisions.`,
       'success'
     );
-
-    // Immediately reflect the cycle output in UI (no need to wait for polling)
-    renderLatestCycle(result);
-    await updateDashboard({ force: true });
 
   } catch (error) {
     setStatus(statusDiv, `Error: ${error.message || 'Failed to run cycle'}`, 'error');
@@ -199,24 +201,15 @@ async function handleStartDemo() {
   try {
     const patientId = currentPatientId === 'all' ? null : currentPatientId;
 
-    const normal = await api.runCycle(patientId, false);
-    lastCycleResult = normal;
-    renderLatestCycle(normal);
-    await updateDashboard({ force: true });
+    await runCycleAndRefresh(patientId, false);
 
     await new Promise((r) => setTimeout(r, 800));
 
-    const emergency = await api.runCycle(patientId, true);
-    lastCycleResult = emergency;
-    renderLatestCycle(emergency);
-    await updateDashboard({ force: true });
+    await runCycleAndRefresh(patientId, true);
 
     await new Promise((r) => setTimeout(r, 800));
 
-    const normal2 = await api.runCycle(patientId, false);
-    lastCycleResult = normal2;
-    renderLatestCycle(normal2);
-    await updateDashboard({ force: true });
+    await runCycleAndRefresh(patientId, false);
 
     setStatus(statusDiv, 'Demo completed. You can start monitoring next.', 'success');
   } catch (error) {
