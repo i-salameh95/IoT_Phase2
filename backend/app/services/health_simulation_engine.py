@@ -312,7 +312,7 @@ class HealthSimulationEngine:
             if not self.is_running:
                 break
 
-            # Simulate emergency on cycle 10 (if enabled)
+            # Simulate emergency on cycle 10 (if enabled)-flag
             emergency = bool(simulate_emergency and i == 10)
 
             last_cycle_result = self.run_cycle(
@@ -331,7 +331,6 @@ class HealthSimulationEngine:
             source="simulation"
         )
 
-        # Keep backward compatibility (return list), but callers may want last cycle too
         return results
 
     def stop_simulation(self):

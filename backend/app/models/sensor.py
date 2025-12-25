@@ -30,7 +30,7 @@ class HistoricalDataQuery(BaseModel):
     measurement: str
     device_id: Optional[str] = None
     sensor_id: Optional[str] = None
-    start_time: Optional[str] = None  # RFC3339 format
+    start_time: Optional[str] = None  # RFC3339 format--
     stop_time: Optional[str] = None   # RFC3339 format
     limit: int = Field(default=1000, ge=1, le=10000)
 

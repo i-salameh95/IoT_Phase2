@@ -2,14 +2,6 @@
 Edge Processing Service
 Implements data filtering, aggregation, and anomaly detection for health sensors
 Acts as the gateway/edge tier between sensors and cloud (Phase 2 Requirement B)
-
-Key improvements:
-- Fixed stats double-counting (values were appended twice)
-- Added explicit, structured edge metadata (range/noise/outlier stats and bounds)
-- Corrected aggregation logic (measurement was incorrectly assumed constant)
-- Safer tags handling when tags is None
-- Deterministic and explainable filtering reasons (embedded in tags when kept;
-  logged when dropped)
 """
 import statistics
 from typing import List, Dict, Optional, Tuple
@@ -146,9 +138,6 @@ class EdgeProcessor:
         """
         Aggregate sensor readings over a time window.
 
-        FIXED:
-        - measurement was previously assumed constant; now grouped per measurement too.
-
         Returns:
             Aggregated SensorReadings (mean aggregation)
         """
@@ -228,7 +217,7 @@ class EdgeProcessor:
     def _apply_noise_filter(self, reading: SensorReading, sensor_key: str) -> Tuple[float, Dict]:
         """
         Apply moving average filter to reduce noise.
-        Always returns a float (never None), to keep pipeline deterministic.
+        Always returns a float, to keep pipeline deterministic.
 
         Returns:
             (filtered_value, info_dict)

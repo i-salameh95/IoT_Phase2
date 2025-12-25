@@ -2,15 +2,6 @@
 ML Model Service for Health Status Prediction
 Trains and uses ML models to predict patient health status
 
-Key improvements:
-- Added explicit Train/Validation/Test split (train/val/test) with configurable ratios
-- Returns confusion matrix + per-class metrics in a UI-friendly format
-- Returns CV scores (list) + mean/std (instead of only mean/std)
-- Fixed MongoDB training-data fetch: mongodb_service.query_sensor_data() does NOT return tags;
-  patient_id is inferred from device_id (e.g., "patient_P001_wearable")
-- Added robust timestamp grouping using parsed ISO time and hour-binning
-- Added training medians for missing-value imputation (better than defaulting to 0)
-- Keeps backward compatibility for predict() output
 """
 import os
 import json
@@ -488,7 +479,7 @@ class HealthStatusMLModel:
             if not best:
                 return {"status": "error", "message": "All algorithms failed", "comparison": results}
 
-            # Load best artifacts back into default model files
+            # Load best artifacts back into default model files--save
             best_algo = best["algorithm"]
             best_model_file = os.path.join(self.MODELS_DIR, f"{best_algo}_model.pkl")
             best_scaler_file = os.path.join(self.MODELS_DIR, f"{best_algo}_scaler.pkl")
@@ -501,7 +492,6 @@ class HealthStatusMLModel:
 
             # restore medians if present
             # (best meta contains no medians; keep current medians from last train)
-            # You can extend to persist medians if you want.
             self.save_model()
 
             return {
@@ -673,7 +663,7 @@ class HealthStatusMLModel:
         """
         Determine health status label (0=Normal, 1=Warning, 2=Critical)
 
-        Design rule (kept simple and demo-friendly):
+        Design rule:
         - If ANY critical condition occurs => Critical
         - Else if >=2 warnings => Warning
         - Else => Normal
