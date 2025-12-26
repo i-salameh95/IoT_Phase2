@@ -7,7 +7,7 @@ import time
 from typing import List, Optional
 
 from app.models.sensor import SensorReading
-from app.core.sensor_config import SENSOR_NORMAL_RANGES
+from app.core.sensor_config import SENSOR_NORMAL_RANGES, SENSOR_CRITICAL_LIMITS
 
 
 class HealthSensorSimulator:
@@ -59,7 +59,8 @@ class HealthSensorSimulator:
         self,
         device_id: Optional[str] = None,
         sensor_type: Optional[str] = None,
-        simulate_emergency: bool = False
+        simulate_emergency: bool = False,
+        simulate_warning: bool = False
     ) -> SensorReading:
         """
         Generate a simulated health sensor reading
@@ -89,7 +90,7 @@ class HealthSensorSimulator:
             sensor_type = available_sensors[0] if available_sensors else self.sensor_types[0]
         
         # Generate value based on sensor type
-        value = self._generate_sensor_value(sensor_type, simulate_emergency)
+        value = self._generate_sensor_value(sensor_type, simulate_emergency, simulate_warning)
         
         reading = SensorReading(
             measurement=sensor_type,
@@ -113,7 +114,7 @@ class HealthSensorSimulator:
                 attempt += 1
                 processed = edge_processor.process_reading(reading)
                 if processed is None:
-                    reading.value = self._generate_sensor_value(sensor_type, simulate_emergency)
+                    reading.value = self._generate_sensor_value(sensor_type, simulate_emergency, simulate_warning)
 
             if processed is not None:
                 processed.tags = (processed.tags or {})
@@ -127,7 +128,7 @@ class HealthSensorSimulator:
 
         return reading
     
-    def _generate_sensor_value(self, sensor_type: str, simulate_emergency: bool = False) -> float:
+    def _generate_sensor_value(self, sensor_type: str, simulate_emergency: bool = False, simulate_warning: bool = False) -> float:
         """Generate sensor value based on type"""
         
         if simulate_emergency:
@@ -148,6 +149,22 @@ class HealthSensorSimulator:
                 "sound_level": random.uniform(85, 110),
             }
             return round(emergency_values.get(sensor_type, 0.0), 1)
+
+        if simulate_warning:
+            normal_range = SENSOR_NORMAL_RANGES.get(sensor_type)
+            critical_limits = SENSOR_CRITICAL_LIMITS.get(sensor_type)
+            if normal_range and critical_limits:
+                nmin, nmax = normal_range
+                cmin, cmax = critical_limits
+                warning_ranges = []
+                if cmin is not None and cmin < nmin:
+                    warning_ranges.append((cmin, nmin))
+                if cmax is not None and cmax > nmax:
+                    warning_ranges.append((nmax, cmax))
+
+                if warning_ranges:
+                    low, high = random.choice(warning_ranges)
+                    return round(random.uniform(low, high), 1)
         
         min_val, max_val = SENSOR_NORMAL_RANGES.get(sensor_type, (0, 100))
         if sensor_type == "motion_detected":
@@ -186,9 +203,9 @@ class HealthSensorSimulator:
         
         return readings
     
-    def generate_batch(self, count: int = 10, simulate_emergency: bool = False) -> List[SensorReading]:
+    def generate_batch(self, count: int = 10, simulate_emergency: bool = False, simulate_warning: bool = False) -> List[SensorReading]:
         """Generate a batch of sensor readings"""
-        return [self.generate_reading(simulate_emergency=simulate_emergency) for _ in range(count)]
+        return [self.generate_reading(simulate_emergency=simulate_emergency, simulate_warning=simulate_warning) for _ in range(count)]
     
     def generate_patient_readings(self, patient_id: str) -> List[SensorReading]:
         """Generate all sensor readings for a specific patient"""

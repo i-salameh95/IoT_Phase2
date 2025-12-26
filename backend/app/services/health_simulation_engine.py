@@ -40,6 +40,7 @@ class HealthSimulationEngine:
         cycle_number: Optional[int] = None,
         patient_id: Optional[str] = None,
         simulate_emergency: bool = False,
+        simulate_warning: bool = False,
         ml_prediction: Optional[dict] = None
     ) -> dict:
         """
@@ -74,6 +75,7 @@ class HealthSimulationEngine:
                 all_readings.extend(device_readings)
 
         emergency_triggered = False
+        warning_triggered = False
         if simulate_emergency and len(all_readings) > 0:
             # Replace multiple readings to ensure visible critical events
             emergency_triggered = True
@@ -96,6 +98,27 @@ class HealthSimulationEngine:
                         simulate_emergency=True
                     )
                     all_readings[idx] = emergency_reading
+        elif simulate_warning and len(all_readings) > 0:
+            warning_triggered = True
+            for idx, reading in enumerate(list(all_readings)):
+                if reading.measurement in {
+                    "heart_rate",
+                    "blood_pressure_systolic",
+                    "blood_pressure_diastolic",
+                    "body_temperature",
+                    "oxygen_saturation",
+                    "glucose_level",
+                    "ambient_temperature",
+                    "humidity",
+                    "co2_level",
+                    "sound_level"
+                }:
+                    warning_reading = self.sensor_simulator.generate_reading(
+                        device_id=reading.device_id,
+                        sensor_type=reading.measurement,
+                        simulate_warning=True
+                    )
+                    all_readings[idx] = warning_reading
 
         # Track response times
         response_times = {
@@ -280,6 +303,7 @@ class HealthSimulationEngine:
             "patient_id": patient_id or "all",
             "simulate_emergency": bool(simulate_emergency),
             "emergency_triggered": bool(emergency_triggered),
+            "warning_triggered": bool(warning_triggered),
 
             "sensor_readings": len(all_readings),
             "processed_readings": len(processed_readings),
@@ -312,22 +336,33 @@ class HealthSimulationEngine:
         last_cycle_result = None
 
         emergency_cycles = set()
+        warning_cycles = set()
         if simulate_emergency and num_cycles > 0:
-            emergency_count = max(1, round(num_cycles * 0.1))
-            emergency_count = min(emergency_count, num_cycles)
-            emergency_cycles = set(random.sample(range(1, num_cycles + 1), k=emergency_count))
+            emergency_count = max(1, round(num_cycles * 0.33))
+            warning_count = max(1, round(num_cycles * 0.33))
+
+            if emergency_count + warning_count > num_cycles:
+                warning_count = max(0, num_cycles - emergency_count)
+
+            cycle_pool = list(range(1, num_cycles + 1))
+            emergency_cycles = set(random.sample(cycle_pool, k=emergency_count))
+            remaining = [c for c in cycle_pool if c not in emergency_cycles]
+            if warning_count:
+                warning_cycles = set(random.sample(remaining, k=warning_count))
 
         for i in range(1, num_cycles + 1):
             if not self.is_running:
                 break
 
-            # Simulate multiple randomized emergency cycles (if enabled)
+            # Simulate randomized emergency + warning cycles (if enabled)
             emergency = bool(simulate_emergency and i in emergency_cycles)
+            warning = bool(simulate_emergency and i in warning_cycles)
 
             last_cycle_result = self.run_cycle(
                 i,
                 patient_id=patient_id,
-                simulate_emergency=emergency
+                simulate_emergency=emergency,
+                simulate_warning=warning
             )
             results.append(last_cycle_result)
 

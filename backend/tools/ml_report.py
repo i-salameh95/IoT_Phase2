@@ -34,15 +34,25 @@ from app.core.mongodb_client import mongodb_service
 
 def _save_comparison_chart(results: list[dict], output_path: Path) -> None:
     names = [r.get("algorithm_name", r.get("algorithm", "unknown")) for r in results]
-    scores = [float(r.get("scores", {}).get("test_score") or 0.0) for r in results]
+    accuracies = [float(r.get("metrics", {}).get("accuracy") or 0.0) for r in results]
+    precisions = [float(r.get("metrics", {}).get("precision") or 0.0) for r in results]
+    recalls = [float(r.get("metrics", {}).get("recall") or 0.0) for r in results]
+    f1s = [float(r.get("metrics", {}).get("f1_score") or 0.0) for r in results]
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.bar(range(len(names)), scores, color="#2563eb")
-    ax.set_xticks(range(len(names)))
+    x = np.arange(len(names))
+    width = 0.2
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar(x - 1.5 * width, accuracies, width, color=(31/255, 111/255, 120/255, 0.75), label="Accuracy")
+    ax.bar(x - 0.5 * width, precisions, width, color=(242/255, 177/255, 56/255, 0.75), label="Precision")
+    ax.bar(x + 0.5 * width, recalls, width, color=(44/255, 156/255, 106/255, 0.75), label="Recall")
+    ax.bar(x + 1.5 * width, f1s, width, color=(196/255, 69/255, 54/255, 0.75), label="F1")
+
+    ax.set_xticks(x)
     ax.set_xticklabels(names, rotation=30, ha="right")
     ax.set_ylim(0, 1)
-    ax.set_ylabel("Test accuracy")
-    ax.set_title("Model Comparison (Test Accuracy)")
+    ax.set_ylabel("Score")
+    ax.legend()
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
@@ -236,12 +246,9 @@ def main() -> int:
     if not comparison:
         print("No successful model results to plot.")
         return 1
-
-    comparison.sort(key=lambda r: float(r.get("scores", {}).get("test_score") or 0.0), reverse=True)
-
     _save_comparison_chart(comparison, output_dir / "model_comparison.png")
 
-    best = comparison[0]
+    best = max(comparison, key=lambda r: float(r.get("scores", {}).get("test_score") or 0.0))
     _save_confusion_matrix(best, output_dir / "best_confusion_matrix.png")
 
     summary_lines = [
