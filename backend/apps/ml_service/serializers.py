@@ -34,4 +34,3 @@ class ModelComparisonRequestSerializer(serializers.Serializer):
         allow_null=True
     )
     test_size = serializers.FloatField(required=False, default=0.2, min_value=0.1, max_value=0.5)
-

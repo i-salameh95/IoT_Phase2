@@ -2,6 +2,7 @@
 URLs for Sensors API
 """
 from django.urls import path
+
 from apps.sensors import views
 
 urlpatterns = [
@@ -12,4 +13,3 @@ urlpatterns = [
     path('sensors/measurements', views.get_measurements, name='get_measurements'),
     path('sensors/devices', views.get_devices, name='get_devices'),
 ]
-

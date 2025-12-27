@@ -1,355 +1,236 @@
 """
 Edge Processing Service
-Implements data filtering, aggregation, and anomaly detection for health sensors
-Acts as the gateway/edge tier between sensors and cloud (Phase 2 Requirement B)
+Implements data filtering, aggregation, and anomaly detection for health sensors.
+Acts as the gateway tier between sensors and cloud (Phase 2 Requirement B).
+
+Design note (demo + realism):
+- We SHOULD NOT drop clinically-important anomalies (critical/warning readings).
+- Instead of filtering outliers by default, we tag them and allow the pipeline to continue.
+  This preserves emergency scenarios and allows actuators + ML labels to reflect reality.
 """
 import statistics
-from typing import List, Dict, Optional, Tuple
 from collections import deque
+from typing import List, Dict, Optional, Tuple
 
-from app.models.sensor import SensorReading
 from app.core.logger import iot_logger
-from app.core.sensor_config import SENSOR_VALID_RANGES, SENSOR_CRITICAL_LIMITS
+from app.models.sensor import SensorReading
 
 
 class EdgeProcessor:
     """
     Edge processing service for health monitoring sensors.
-    Performs initial filtration/processing before data reaches the gateway/cloud.
+
+    Pipeline:
+      1) Range validation (hard bounds per measurement)
+      2) Noise filtering (moving average)
+      3) Outlier detection (IQR) - tag by default, optionally drop
+      4) Statistics update (for normal readings, not outliers)
+      5) Emit processed SensorReading with traceability tags
     """
 
-    def __init__(self, window_size: int = 5, stats_window: int = 20):
+    def __init__(self, window_size: int = 5, outlier_mode: str = "tag"):
         """
-        Initialize edge processor
-
         Args:
             window_size: Size of moving average window for noise filtering
-            stats_window: Size of rolling window used for outlier detection statistics
+            outlier_mode: "tag" (default) or "drop"
+                - "tag": preserve readings but mark outliers in tags
+                - "drop": filter outliers out of the pipeline
         """
         self.window_size = window_size
-        self.stats_window = stats_window
-
-        # Store recent readings for each sensor (for moving average)
+        self.outlier_mode = outlier_mode
         self.sensor_buffers: Dict[str, deque] = {}
-
-        # Store rolling history for outlier detection (per sensor_key)
-        self.sensor_history: Dict[str, deque] = {}
-
-        # Store computed stats (mean/std/etc.) for observability
         self.sensor_stats: Dict[str, Dict] = {}
-
-    def _sensor_key(self, reading: SensorReading) -> str:
-        return f"{reading.device_id}_{reading.sensor_id}"
 
     def process_reading(self, reading: SensorReading) -> Optional[SensorReading]:
         """
         Process a single sensor reading through edge processing pipeline.
 
-        Steps:
-        1) Range validation (fast reject)
-        2) Noise filtering (moving average)
-        3) Outlier detection (IQR) based on rolling history
-        4) Update stats and history (only after passing)
-        5) Emit processed reading with edge metadata in tags
-
         Returns:
-            Processed SensorReading or None if filtered out
+            Processed SensorReading, or None if filtered out (range invalid, or outlier_mode="drop").
         """
-        sensor_key = self._sensor_key(reading)
-        tags = (reading.tags or {}).copy()
+        sensor_key = f"{reading.device_id}_{reading.sensor_id}"
 
-        # 1) Range validation
-        ok_range, range_info = self._validate_range(reading)
-        if not ok_range:
+        # Step 1: Range validation (quick filter)
+        if not self._validate_range(reading):
             iot_logger.warning(
-                f"Edge filter: range_invalid for {reading.measurement} value={reading.value}",
+                f"Reading out of range: {reading.measurement}={reading.value}",
                 source="edge_processor",
                 device_id=reading.device_id,
-                sensor_id=reading.sensor_id,
-                metadata={
-                    "measurement": reading.measurement,
-                    "value": reading.value,
-                    "reason": "range_invalid",
-                    **range_info,
-                },
+                sensor_id=reading.sensor_id
             )
             return None
 
-        # 2) Noise filtering (moving average)
-        filtered_value, noise_info = self._apply_noise_filter(reading, sensor_key)
-        critical_raw = self._is_critical_value(reading.measurement, reading.value)
-        if critical_raw:
-            filtered_value = reading.value
-            noise_info = {
-                "method": "moving_average",
-                "window_size": self.window_size,
-                "buffer_len": len(self.sensor_buffers.get(sensor_key, [])),
-                "applied": False,
-                "reason": "critical_bypass",
-            }
+        # Step 2: Noise filtering (moving average)
+        filtered_value = self._apply_noise_filter(reading, sensor_key)
+        if filtered_value is None:
+            return None
 
-        # 3) Outlier detection (IQR) using history (do NOT mutate history before decision)
-        critical_filtered = self._is_critical_value(reading.measurement, filtered_value)
-        if critical_raw or critical_filtered:
-            outlier_ok = True
-            outlier_info = {
-                "method": "iqr",
-                "enabled": True,
-                "bypassed": True,
-                "reason": "critical_value",
-            }
-        else:
-            outlier_ok, outlier_info = self._detect_outlier(sensor_key, filtered_value)
-            if not outlier_ok:
-                outlier_info["flagged"] = True
-                iot_logger.warning(
-                    f"Edge outlier flagged for {reading.measurement} value={reading.value} filtered={filtered_value}",
-                    source="edge_processor",
-                    device_id=reading.device_id,
-                    sensor_id=reading.sensor_id,
-                    metadata={
-                        "measurement": reading.measurement,
-                        "value": reading.value,
-                        "filtered_value": filtered_value,
-                        "reason": "outlier_detected",
-                        **outlier_info,
-                    },
-                )
+        # Step 3: Outlier detection (IQR) using historical window (excluding current sample)
+        is_outlier, bounds = self._is_outlier(sensor_key, filtered_value)
 
-        # 4) Update history + stats only after passing filters
-        self._update_history(sensor_key, filtered_value)
-        self._update_statistics(sensor_key)
+        if is_outlier and self.outlier_mode == "drop":
+            iot_logger.warning(
+                f"Outlier dropped: {reading.measurement}={filtered_value}",
+                source="edge_processor",
+                device_id=reading.device_id,
+                sensor_id=reading.sensor_id,
+                metadata={"outlier_bounds": bounds}
+            )
+            return None
 
-        # 5) Create processed reading with explicit metadata for demo/UI traceability
-        processed_tags = {
-            **tags,
+        # Step 4: Update statistics (do not contaminate stats with outliers)
+        if not is_outlier:
+            self._update_statistics(sensor_key, filtered_value)
+
+        # Step 5: Create processed reading with traceability tags
+        tags = dict(reading.tags or {})
+        tags.update({
             "processed_by": "edge_processor",
-            "edge": {
-                "range_validation": range_info,
-                "noise_filter": noise_info,
-                "outlier_detection": outlier_info,
-            },
             "original_value": reading.value,
-            "filtered_value": filtered_value,
             "filtered": reading.value != filtered_value,
-            "critical_value": bool(critical_raw or critical_filtered),
-        }
+            "outlier": bool(is_outlier),
+        })
+        if bounds:
+            tags["outlier_bounds"] = bounds
 
-        return SensorReading(
+        processed_reading = SensorReading(
             measurement=reading.measurement,
             device_id=reading.device_id,
             sensor_id=reading.sensor_id,
             value=filtered_value,
             timestamp=reading.timestamp,
-            tags=processed_tags,
+            tags=tags
         )
+        iot_logger.info(
+            f"Edge processed: {reading.measurement}={filtered_value}",
+            source="edge_processor",
+            device_id=reading.device_id,
+            sensor_id=reading.sensor_id,
+            metadata={"original_value": reading.value, "outlier": bool(is_outlier)}
+        )
+        return processed_reading
 
     def process_batch(self, readings: List[SensorReading]) -> List[SensorReading]:
-        """
-        Process a batch of sensor readings.
-        Returns only readings that pass edge checks.
-        """
+        """Process a batch of sensor readings."""
         processed: List[SensorReading] = []
         for reading in readings:
-            out = self.process_reading(reading)
-            if out is not None:
-                processed.append(out)
+            pr = self.process_reading(reading)
+            if pr is not None:
+                processed.append(pr)
         return processed
 
     def aggregate_readings(self, readings: List[SensorReading], window_seconds: int = 60) -> List[SensorReading]:
         """
-        Aggregate sensor readings over a time window.
+        Aggregate sensor readings over a time window (mean).
 
-        Returns:
-            Aggregated SensorReadings (mean aggregation)
+        Notes:
+        - Aggregation is measurement-aware (no "readings[0].measurement" bug).
         """
         if not readings:
             return []
 
-        grouped: Dict[Tuple[str, str, int], List[float]] = {}
-        # key = (sensor_key, measurement, window_start)
-        for r in readings:
-            sensor_key = self._sensor_key(r)
-            window_start = (r.timestamp // window_seconds) * window_seconds
-            key = (sensor_key, r.measurement, window_start)
-            grouped.setdefault(key, []).append(r.value)
+        grouped: Dict[Tuple[str, int, str], List[float]] = {}
+        for reading in readings:
+            sensor_key = f"{reading.device_id}_{reading.sensor_id}"
+            window_start = (int(reading.timestamp) // window_seconds) * window_seconds
+            key = (sensor_key, window_start, reading.measurement)
+            grouped.setdefault(key, []).append(reading.value)
 
         aggregated: List[SensorReading] = []
-        for (sensor_key, measurement, window_start), values in grouped.items():
-            device_id, sensor_id = sensor_key.rsplit("_", 1)
+        for (sensor_key, window_start, measurement), values in grouped.items():
+            device_id, sensor_id = sensor_key.rsplit('_', 1)
             avg_value = statistics.mean(values)
-
-            aggregated.append(
-                SensorReading(
-                    measurement=measurement,
-                    device_id=device_id,
-                    sensor_id=sensor_id,
-                    value=round(avg_value, 2),
-                    timestamp=window_start,
-                    tags={
-                        "processed_by": "edge_processor",
-                        "aggregated": True,
-                        "window_seconds": window_seconds,
-                        "count": len(values),
-                        "aggregate": "mean",
-                    },
-                )
-            )
-
+            aggregated.append(SensorReading(
+                measurement=measurement,
+                device_id=device_id,
+                sensor_id=sensor_id,
+                value=round(avg_value, 2),
+                timestamp=window_start,
+                tags={
+                    "aggregated": True,
+                    "window_seconds": window_seconds,
+                    "count": len(values),
+                    "processed_by": "edge_processor"
+                }
+            ))
         return aggregated
 
-    # ---------------------------
-    # Validation / Filtering
-    # ---------------------------
-
-    def _validate_range(self, reading: SensorReading) -> Tuple[bool, Dict]:
-        """
-        Validate sensor reading is within expected range.
-        Returns (ok, info_dict) for UI/logs.
-        """
-        expected_range = SENSOR_VALID_RANGES.get(reading.measurement)
-        if not expected_range:
-            return True, {"enabled": False, "reason": "unknown_measurement"}
-
-        min_val, max_val = expected_range
-        ok = min_val <= reading.value <= max_val
-        return ok, {
-            "enabled": True,
-            "min": min_val,
-            "max": max_val,
-            "ok": ok,
+    def _validate_range(self, reading: SensorReading) -> bool:
+        """Validate sensor reading is within expected hard bounds (device plausibility bounds)."""
+        ranges = {
+            "heart_rate": (40, 200),
+            "blood_pressure_systolic": (70, 220),
+            "blood_pressure_diastolic": (40, 140),
+            "body_temperature": (35.0, 42.0),
+            "oxygen_saturation": (70, 100),
+            "glucose_level": (40, 400),
+            "activity_steps": (0, 50000),
         }
-
-    def _is_critical_value(self, measurement: str, value: float) -> bool:
-        limits = SENSOR_CRITICAL_LIMITS.get(measurement)
-        if not limits:
-            return False
-        min_val, max_val = limits
-        if min_val is not None and value < min_val:
+        expected = ranges.get(reading.measurement)
+        if not expected:
             return True
-        if max_val is not None and value > max_val:
-            return True
-        return False
+        lo, hi = expected
+        return lo <= reading.value <= hi
 
-    def _apply_noise_filter(self, reading: SensorReading, sensor_key: str) -> Tuple[float, Dict]:
-        """
-        Apply moving average filter to reduce noise.
-        Always returns a float, to keep pipeline deterministic.
-
-        Returns:
-            (filtered_value, info_dict)
-        """
+    def _apply_noise_filter(self, reading: SensorReading, sensor_key: str) -> Optional[float]:
+        """Apply moving average filter to reduce noise."""
         if sensor_key not in self.sensor_buffers:
             self.sensor_buffers[sensor_key] = deque(maxlen=self.window_size)
 
         buf = self.sensor_buffers[sensor_key]
         buf.append(reading.value)
 
+        # Not enough for smoothing; keep original value
         if len(buf) < 2:
-            # Not enough history; return raw
-            return reading.value, {
-                "method": "moving_average",
-                "window_size": self.window_size,
-                "buffer_len": len(buf),
-                "applied": False,
-                "reason": "insufficient_history",
-            }
+            return float(reading.value)
 
-        filtered = round(statistics.mean(buf), 2)
-        return filtered, {
-            "method": "moving_average",
-            "window_size": self.window_size,
-            "buffer_len": len(buf),
-            "applied": True,
-        }
+        return round(float(statistics.mean(buf)), 2)
 
-    def _detect_outlier(self, sensor_key: str, filtered_value: float) -> Tuple[bool, Dict]:
+    def _is_outlier(self, sensor_key: str, value: float) -> Tuple[bool, Optional[dict]]:
         """
-        Detect outliers using IQR method based on rolling history (without mutating history first).
+        Detect outliers using IQR (Interquartile Range) method, based on historical values.
 
         Returns:
-            (ok, info_dict)
+            (is_outlier, bounds_dict_or_none)
         """
-        history = self.sensor_history.get(sensor_key)
-        if not history:
-            return True, {
-                "method": "iqr",
-                "enabled": True,
-                "history_len": 0,
-                "ok": True,
-                "reason": "insufficient_history",
-            }
+        # Initialize stats bucket
+        if sensor_key not in self.sensor_stats:
+            self.sensor_stats[sensor_key] = {"values": deque(maxlen=20), "mean": None, "std": None}
 
-        values = sorted(list(history))
-        if len(values) < 4:
-            return True, {
-                "method": "iqr",
-                "enabled": True,
-                "history_len": len(values),
-                "ok": True,
-                "reason": "insufficient_history",
-            }
+        stats = self.sensor_stats[sensor_key]
+        hist = list(stats["values"])  # historical values only (no current appended)
 
-        q1 = values[len(values) // 4]
-        q3 = values[(3 * len(values)) // 4]
+        # Need at least 4 historical values to establish IQR
+        if len(hist) < 4:
+            return (False, None)
+
+        hist_sorted = sorted(hist)
+        n = len(hist_sorted)
+        q1 = hist_sorted[n // 4]
+        q3 = hist_sorted[(3 * n) // 4]
         iqr = q3 - q1
 
-        # If iqr == 0, everything is identical; allow through unless wildly different.
-        lower_bound = q1 - 1.5 * iqr
-        upper_bound = q3 + 1.5 * iqr
+        lower = q1 - 1.5 * iqr
+        upper = q3 + 1.5 * iqr
 
-        is_outlier = filtered_value < lower_bound or filtered_value > upper_bound
+        is_outlier = value < lower or value > upper
+        return (is_outlier, {"lower": round(float(lower), 2), "upper": round(float(upper), 2)})
 
-        return (not is_outlier), {
-            "method": "iqr",
-            "enabled": True,
-            "history_len": len(values),
-            "q1": q1,
-            "q3": q3,
-            "iqr": iqr,
-            "lower_bound": lower_bound,
-            "upper_bound": upper_bound,
-            "ok": (not is_outlier),
-        }
+    def _update_statistics(self, sensor_key: str, value: float):
+        """Update rolling statistics for non-outlier readings."""
+        if sensor_key not in self.sensor_stats:
+            self.sensor_stats[sensor_key] = {"values": deque(maxlen=20), "mean": None, "std": None}
 
-    # ---------------------------
-    # History + Stats
-    # ---------------------------
-
-    def _update_history(self, sensor_key: str, value: float) -> None:
-        """Append value into rolling history used for outlier detection."""
-        if sensor_key not in self.sensor_history:
-            self.sensor_history[sensor_key] = deque(maxlen=self.stats_window)
-        self.sensor_history[sensor_key].append(value)
-
-    def _update_statistics(self, sensor_key: str) -> None:
-        """Compute mean/std on current rolling history for observability."""
-        history = self.sensor_history.get(sensor_key)
-        if not history:
-            return
-
-        values = list(history)
-        mean = statistics.mean(values)
-        std = statistics.stdev(values) if len(values) > 1 else 0.0
-
-        self.sensor_stats[sensor_key] = {
-            "history_len": len(values),
-            "mean": mean,
-            "std": std,
-            "min": min(values) if values else None,
-            "max": max(values) if values else None,
-        }
-
-    # ---------------------------
-    # Anomaly detection (rule-based)
-    # ---------------------------
+        stats = self.sensor_stats[sensor_key]
+        stats["values"].append(float(value))
+        stats["mean"] = float(statistics.mean(stats["values"]))
+        stats["std"] = float(statistics.stdev(stats["values"])) if len(stats["values"]) > 1 else 0.0
 
     def detect_anomaly(self, reading: SensorReading) -> Dict:
         """
-        Detect anomalies based on health thresholds.
+        Detect anomalies based on health thresholds (clinical semantics).
 
-        Returns:
-            {has_anomaly: bool, anomalies: list[str], severity: normal|warning|critical}
+        This is separate from statistical outlier detection.
         """
         anomalies = []
         severity = "normal"
@@ -382,37 +263,16 @@ class EdgeProcessor:
             elif reading.value > 180:
                 anomalies.append("hyperglycemia")
                 severity = "warning"
-        elif reading.measurement == "ambient_temperature":
-            if reading.value < 18.0 or reading.value > 27.0:
-                anomalies.append("room_temperature_out_of_range")
-                severity = "warning"
-        elif reading.measurement == "humidity":
-            if reading.value < 25 or reading.value > 70:
-                anomalies.append("humidity_out_of_range")
-                severity = "warning"
-        elif reading.measurement == "co2_level":
-            if reading.value > 1500:
-                anomalies.append("co2_high")
-                severity = "warning"
-        elif reading.measurement == "sound_level":
-            if reading.value > 80:
-                anomalies.append("noise_high")
-                severity = "warning"
 
-        return {
-            "has_anomaly": len(anomalies) > 0,
-            "anomalies": anomalies,
-            "severity": severity,
-        }
+        return {"has_anomaly": bool(anomalies), "anomalies": anomalies, "severity": severity}
 
     def get_statistics(self, sensor_key: str) -> Optional[Dict]:
         """Get statistics for a sensor."""
         return self.sensor_stats.get(sensor_key)
 
-    def reset(self):
-        """Reset in-memory buffers and stats."""
+    def reset(self) -> None:
+        """Clear in-memory buffers and stats."""
         self.sensor_buffers = {}
-        self.sensor_history = {}
         self.sensor_stats = {}
 
 

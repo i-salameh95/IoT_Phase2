@@ -1,4 +1,3 @@
-
 services:
   # MQTT Broker
   mqtt:
@@ -40,6 +39,7 @@ services:
       - MONGODB_URL=mongodb://admin:admin123@mongodb:27017/health_data?authSource=admin
       - MONGODB_DATABASE=health_data
       - DEBUG=True
+      - MQTT_ENABLED=True
     volumes:
       - ./backend:/app
     depends_on:

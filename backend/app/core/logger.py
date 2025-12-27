@@ -3,13 +3,15 @@ Centralized logging service with MongoDB or CSV backend
 """
 from datetime import datetime
 from typing import Optional
-from app.models.log import LogEntry, LogLevel
+
 from pymongo.errors import PyMongoError
+
+from app.models.log import LogLevel
 
 
 class IoTLogger:
     """Centralized logger for IoT system"""
-    
+
     def __init__(self):
         # Lazy import to avoid circular dependency
         from app.core.mongodb_client import mongodb_service
@@ -41,16 +43,16 @@ class IoTLogger:
         except PyMongoError:
             self._switch_to_csv()
             return False
-    
+
     def log(
-        self,
-        level: LogLevel,
-        message: str,
-        source: str,
-        device_id: Optional[str] = None,
-        sensor_id: Optional[str] = None,
-        actuator_id: Optional[str] = None,
-        metadata: Optional[dict] = None
+            self,
+            level: LogLevel,
+            message: str,
+            source: str,
+            device_id: Optional[str] = None,
+            sensor_id: Optional[str] = None,
+            actuator_id: Optional[str] = None,
+            metadata: Optional[dict] = None
     ):
         """
         Log an entry to MongoDB
@@ -65,7 +67,7 @@ class IoTLogger:
             metadata: Additional metadata (optional)
         """
         timestamp = int(datetime.utcnow().timestamp())
-        
+
         log_entry = {
             "level": level.value,
             "message": message,
@@ -73,7 +75,7 @@ class IoTLogger:
             "timestamp": timestamp,
             "created_at": datetime.utcnow()
         }
-        
+
         if device_id:
             log_entry["device_id"] = device_id
         if sensor_id:
@@ -82,7 +84,7 @@ class IoTLogger:
             log_entry["actuator_id"] = actuator_id
         if metadata:
             log_entry["metadata"] = metadata
-        
+
         if self.use_mongo and not self.mongodb_service.available:
             self._switch_to_csv()
         if not self.use_mongo:
@@ -97,33 +99,33 @@ class IoTLogger:
                 self._switch_to_csv()
 
         self.csv_storage.write_log(log_entry)
-    
+
     def debug(self, message: str, source: str, **kwargs):
         """Log debug message"""
         self.log(LogLevel.DEBUG, message, source, **kwargs)
-    
+
     def info(self, message: str, source: str, **kwargs):
         """Log info message"""
         self.log(LogLevel.INFO, message, source, **kwargs)
-    
+
     def warning(self, message: str, source: str, **kwargs):
         """Log warning message"""
         self.log(LogLevel.WARNING, message, source, **kwargs)
-    
+
     def error(self, message: str, source: str, **kwargs):
         """Log error message"""
         self.log(LogLevel.ERROR, message, source, **kwargs)
-    
+
     def critical(self, message: str, source: str, **kwargs):
         """Log critical message"""
         self.log(LogLevel.CRITICAL, message, source, **kwargs)
-    
+
     def get_logs(
-        self,
-        level: Optional[str] = None,
-        source: Optional[str] = None,
-        device_id: Optional[str] = None,
-        limit: int = 100
+            self,
+            level: Optional[str] = None,
+            source: Optional[str] = None,
+            device_id: Optional[str] = None,
+            limit: int = 100
     ):
         """
         Retrieve logs from MongoDB
@@ -136,18 +138,18 @@ class IoTLogger:
         """
         if not self.use_mongo:
             return self.csv_storage.get_logs(level, source, device_id, limit)
-        
+
         query = {}
-        
+
         if level:
             query["level"] = level
         if source:
             query["source"] = source
         if device_id:
             query["device_id"] = device_id
-        
+
         cursor = self.collection.find(query).sort("timestamp", -1).limit(limit)
-        
+
         logs = []
         for doc in cursor:
             logs.append({
@@ -160,12 +162,13 @@ class IoTLogger:
                 "actuator_id": doc.get("actuator_id"),
                 "metadata": doc.get("metadata")
             })
-        
+
         return logs
 
 
 # Global logger instance (lazy initialization to avoid circular import)
 _iot_logger_instance = None
+
 
 def get_logger():
     """Get the global logger instance (lazy initialization)"""
@@ -174,10 +177,13 @@ def get_logger():
         _iot_logger_instance = IoTLogger()
     return _iot_logger_instance
 
+
 # For backward compatibility, create instance on first access
 class _LazyLogger:
     """Lazy proxy for IoTLogger to avoid circular imports"""
+
     def __getattr__(self, name):
         return getattr(get_logger(), name)
+
 
 iot_logger = _LazyLogger()

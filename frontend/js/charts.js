@@ -3,23 +3,23 @@
  */
 
 const RANGE_BANDS = {
-    heart_rate: { min: 60, max: 100, unit: 'bpm' },
-    blood_pressure_systolic: { min: 90, max: 140, unit: 'mmHg' },
-    blood_pressure_diastolic: { min: 60, max: 90, unit: 'mmHg' },
-    body_temperature: { min: 36.1, max: 37.2, unit: 'C' },
-    oxygen_saturation: { min: 95, max: 100, unit: '%' },
-    glucose_level: { min: 70, max: 100, unit: 'mg/dL' },
-    activity_steps: { min: 0, max: 20000, unit: 'steps' },
-    ambient_temperature: { min: 20, max: 24, unit: 'C' },
-    humidity: { min: 30, max: 60, unit: '%' },
-    light_level: { min: 100, max: 800, unit: 'lux' },
-    motion_detected: { min: 0, max: 1, unit: '' },
-    co2_level: { min: 400, max: 1000, unit: 'ppm' },
-    sound_level: { min: 30, max: 60, unit: 'dB' }
+    heart_rate: {min: 60, max: 100, unit: 'bpm'},
+    blood_pressure_systolic: {min: 90, max: 140, unit: 'mmHg'},
+    blood_pressure_diastolic: {min: 60, max: 90, unit: 'mmHg'},
+    body_temperature: {min: 36.1, max: 37.2, unit: 'C'},
+    oxygen_saturation: {min: 95, max: 100, unit: '%'},
+    glucose_level: {min: 70, max: 100, unit: 'mg/dL'},
+    activity_steps: {min: 0, max: 20000, unit: 'steps'},
+    ambient_temperature: {min: 20, max: 24, unit: 'C'},
+    humidity: {min: 30, max: 60, unit: '%'},
+    light_level: {min: 100, max: 800, unit: 'lux'},
+    motion_detected: {min: 0, max: 1, unit: ''},
+    co2_level: {min: 400, max: 1000, unit: 'ppm'},
+    sound_level: {min: 30, max: 60, unit: 'dB'}
 };
 
 class ChartManager {
-    constructor({ canvasId, selectId, defaultSensor }) {
+    constructor({canvasId, selectId, defaultSensor}) {
         this.canvasId = canvasId;
         this.selectId = selectId;
         this.currentSensor = defaultSensor;

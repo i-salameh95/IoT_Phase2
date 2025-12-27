@@ -6,13 +6,14 @@ import random
 import time
 from typing import List, Optional
 
-from app.models.sensor import SensorReading
+from app.core.logger import iot_logger
 from app.core.sensor_config import SENSOR_NORMAL_RANGES, SENSOR_CRITICAL_LIMITS
+from app.models.sensor import SensorReading
 
 
 class HealthSensorSimulator:
     """Simulates health monitoring IoT sensor data"""
-    
+
     def __init__(self):
         # Patient monitoring devices
         self.devices = [
@@ -24,7 +25,7 @@ class HealthSensorSimulator:
             {"device_id": "patient_002_bedside", "location": "bedside", "patient_id": "P002"},
             {"device_id": "patient_002_room", "location": "room", "patient_id": "P002"},
         ]
-        
+
         # Health monitoring sensor types
         self.sensor_types = [
             "heart_rate",
@@ -41,26 +42,28 @@ class HealthSensorSimulator:
             "co2_level",
             "sound_level"
         ]
-        
+
         # Device-sensor mapping
         self.device_sensors = {
             "patient_001_wearable": ["heart_rate", "oxygen_saturation", "body_temperature", "activity_steps"],
             "patient_001_bedside": ["blood_pressure_systolic", "blood_pressure_diastolic", "body_temperature"],
             "patient_001_glucose": ["glucose_level"],
-            "patient_001_room": ["ambient_temperature", "humidity", "light_level", "motion_detected", "co2_level", "sound_level"],
+            "patient_001_room": ["ambient_temperature", "humidity", "light_level", "motion_detected", "co2_level",
+                                 "sound_level"],
             "patient_002_wearable": ["heart_rate", "oxygen_saturation", "body_temperature", "activity_steps"],
             "patient_002_bedside": ["blood_pressure_systolic", "blood_pressure_diastolic", "body_temperature"],
-            "patient_002_room": ["ambient_temperature", "humidity", "light_level", "motion_detected", "co2_level", "sound_level"],
+            "patient_002_room": ["ambient_temperature", "humidity", "light_level", "motion_detected", "co2_level",
+                                 "sound_level"],
         }
         self.edge_sensor_types = {"oxygen_saturation"}
         self.edge_max_attempts = 3
-    
+
     def generate_reading(
-        self,
-        device_id: Optional[str] = None,
-        sensor_type: Optional[str] = None,
-        simulate_emergency: bool = False,
-        simulate_warning: bool = False
+            self,
+            device_id: Optional[str] = None,
+            sensor_type: Optional[str] = None,
+            simulate_emergency: bool = False,
+            simulate_warning: bool = False
     ) -> SensorReading:
         """
         Generate a simulated health sensor reading
@@ -79,19 +82,19 @@ class HealthSensorSimulator:
             device_id = device["device_id"]
         else:
             device = next((d for d in self.devices if d["device_id"] == device_id), self.devices[0])
-        
+
         # Get available sensors for this device
         available_sensors = self.device_sensors.get(device_id, self.sensor_types)
-        
+
         # Select random sensor type if not specified
         if not sensor_type:
             sensor_type = random.choice(available_sensors)
         elif sensor_type not in available_sensors:
             sensor_type = available_sensors[0] if available_sensors else self.sensor_types[0]
-        
+
         # Generate value based on sensor type
         value = self._generate_sensor_value(sensor_type, simulate_emergency, simulate_warning)
-        
+
         reading = SensorReading(
             measurement=sensor_type,
             device_id=device_id,
@@ -121,25 +124,52 @@ class HealthSensorSimulator:
                 processed.tags["processed_by"] = "sensor_edge"
                 processed.tags["sensor_edge_type"] = sensor_type
                 processed.tags["sensor_edge_attempts"] = attempt
+                iot_logger.info(
+                    f"Sensor reading: {sensor_type}={processed.value}",
+                    source="sensor",
+                    device_id=processed.device_id,
+                    sensor_id=processed.sensor_id,
+                    metadata={"patient_id": device.get("patient_id"), "processed_by": "sensor_edge"}
+                )
                 return processed
 
             reading.tags["processed_by"] = "sensor_edge_failed"
             reading.tags["sensor_edge_attempts"] = attempt
+            iot_logger.info(
+                f"Sensor reading: {sensor_type}={reading.value}",
+                source="sensor",
+                device_id=reading.device_id,
+                sensor_id=reading.sensor_id,
+                metadata={"patient_id": device.get("patient_id"), "processed_by": "sensor_edge_failed"}
+            )
+            return reading
 
+        iot_logger.info(
+            f"Sensor reading: {sensor_type}={reading.value}",
+            source="sensor",
+            device_id=reading.device_id,
+            sensor_id=reading.sensor_id,
+            metadata={"patient_id": device.get("patient_id")}
+        )
         return reading
-    
-    def _generate_sensor_value(self, sensor_type: str, simulate_emergency: bool = False, simulate_warning: bool = False) -> float:
+
+    def _generate_sensor_value(self, sensor_type: str, simulate_emergency: bool = False,
+                               simulate_warning: bool = False) -> float:
         """Generate sensor value based on type"""
-        
+
         if simulate_emergency:
             # Generate critical values for emergency simulation
             emergency_values = {
-                "heart_rate": random.choice([random.uniform(40, 50), random.uniform(150, 200)]),  # Bradycardia or Tachycardia
-                "blood_pressure_systolic": random.choice([random.uniform(70, 90), random.uniform(180, 220)]),  # Low or High
+                "heart_rate": random.choice([random.uniform(40, 50), random.uniform(150, 200)]),
+                # Bradycardia or Tachycardia
+                "blood_pressure_systolic": random.choice([random.uniform(70, 90), random.uniform(180, 220)]),
+                # Low or High
                 "blood_pressure_diastolic": random.choice([random.uniform(40, 60), random.uniform(110, 140)]),
-                "body_temperature": random.choice([random.uniform(35.0, 35.5), random.uniform(38.5, 42.0)]),  # Hypothermia or Fever
+                "body_temperature": random.choice([random.uniform(35.0, 35.5), random.uniform(38.5, 42.0)]),
+                # Hypothermia or Fever
                 "oxygen_saturation": random.uniform(70, 90),  # Hypoxia
-                "glucose_level": random.choice([random.uniform(40, 70), random.uniform(200, 400)]),  # Hypo or Hyperglycemia
+                "glucose_level": random.choice([random.uniform(40, 70), random.uniform(200, 400)]),
+                # Hypo or Hyperglycemia
                 "activity_steps": random.uniform(0, 100),  # Low activity
                 "ambient_temperature": random.choice([random.uniform(16.0, 18.0), random.uniform(28.0, 32.0)]),
                 "humidity": random.choice([random.uniform(15, 25), random.uniform(75, 90)]),
@@ -165,23 +195,29 @@ class HealthSensorSimulator:
                 if warning_ranges:
                     low, high = random.choice(warning_ranges)
                     return round(random.uniform(low, high), 1)
-        
+
         min_val, max_val = SENSOR_NORMAL_RANGES.get(sensor_type, (0, 100))
         if sensor_type == "motion_detected":
             value = float(random.choice([0, 1]))
         else:
             value = round(random.uniform(min_val, max_val), 1)
-        
+
         # Add some realistic variation (occasional slight deviations)
         if random.random() < 0.1:  # 10% chance of slight deviation
             if sensor_type == "heart_rate":
                 value = round(random.uniform(50, 110), 1)  # Slightly outside normal
             elif sensor_type == "body_temperature":
                 value = round(random.uniform(35.5, 37.5), 1)  # Slight variation
-        
+
         return value
-    
-    def generate_all_sensor_readings(self, device_id: Optional[str] = None) -> List[SensorReading]:
+
+    def generate_all_sensor_readings(
+            self,
+            device_id: Optional[str] = None,
+            simulate_emergency: bool = False,
+            simulate_warning: bool = False,
+            cycle: Optional[int] = None
+    ) -> List[SensorReading]:
         """
         Generate readings for all sensor types for a device
         
@@ -194,28 +230,50 @@ class HealthSensorSimulator:
         if not device_id:
             device = random.choice(self.devices)
             device_id = device["device_id"]
-        
+
         readings = []
         available_sensors = self.device_sensors.get(device_id, self.sensor_types)
-        
+
         for sensor_type in available_sensors:
-            readings.append(self.generate_reading(device_id=device_id, sensor_type=sensor_type))
-        
+            reading = self.generate_reading(
+                device_id=device_id,
+                sensor_type=sensor_type,
+                simulate_emergency=simulate_emergency,
+                simulate_warning=simulate_warning
+            )
+            if cycle is not None:
+                reading.tags = dict(reading.tags or {})
+                reading.tags["cycle"] = cycle
+            readings.append(reading)
+
         return readings
-    
-    def generate_batch(self, count: int = 10, simulate_emergency: bool = False, simulate_warning: bool = False) -> List[SensorReading]:
+
+    def generate_batch(self, count: int = 10, simulate_emergency: bool = False, simulate_warning: bool = False) -> List[
+        SensorReading]:
         """Generate a batch of sensor readings"""
-        return [self.generate_reading(simulate_emergency=simulate_emergency, simulate_warning=simulate_warning) for _ in range(count)]
-    
-    def generate_patient_readings(self, patient_id: str) -> List[SensorReading]:
+        return [self.generate_reading(simulate_emergency=simulate_emergency, simulate_warning=simulate_warning) for _ in
+                range(count)]
+
+    def generate_patient_readings(
+            self,
+            patient_id: str,
+            cycle: Optional[int] = None,
+            simulate_emergency: bool = False,
+            simulate_warning: bool = False
+    ) -> List[SensorReading]:
         """Generate all sensor readings for a specific patient"""
         patient_devices = [d for d in self.devices if d.get("patient_id") == patient_id]
         all_readings = []
-        
+
         for device in patient_devices:
-            device_readings = self.generate_all_sensor_readings(device_id=device["device_id"])
+            device_readings = self.generate_all_sensor_readings(
+                device_id=device["device_id"],
+                simulate_emergency=simulate_emergency,
+                simulate_warning=simulate_warning,
+                cycle=cycle
+            )
             all_readings.extend(device_readings)
-        
+
         return all_readings
 
 

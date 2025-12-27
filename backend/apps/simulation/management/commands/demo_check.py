@@ -3,9 +3,9 @@ Run a minimal logical system check without manual UI steps.
 """
 from django.core.management.base import BaseCommand
 
-from app.services.health_simulation_engine import health_simulation_engine
-from app.services.edge_processor import edge_processor
 from app.models.sensor import SensorReading
+from app.services.edge_processor import edge_processor
+from app.services.health_simulation_engine import health_simulation_engine
 
 
 class Command(BaseCommand):

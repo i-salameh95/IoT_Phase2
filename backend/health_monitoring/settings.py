@@ -3,6 +3,7 @@ Django settings for Health Monitoring IoT System
 """
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,17 +27,18 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    
+
     # Third party
     'rest_framework',
     'corsheaders',
-    
+
     # Local apps
     'apps.sensors',
     'apps.actuators',
     'apps.simulation',
     'apps.ml_service',
     'apps.analytics',
+    'apps.logs',
 ]
 
 MIDDLEWARE = [
@@ -132,4 +134,3 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG  # Allow all in development
 # MongoDB Configuration
 MONGODB_URL = os.getenv('MONGODB_URL', 'mongodb://admin:admin123@mongodb:27017/health_data?authSource=admin')
 MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'health_data')
-

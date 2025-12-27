@@ -1,13 +1,15 @@
 """
 WSGI config for Health Monitoring IoT System
 """
-import os
 import atexit
+import os
+
 from django.core.wsgi import get_wsgi_application
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'health_monitoring.settings')
 
 application = get_wsgi_application()
+
 
 # Clean up MongoDB connections on shutdown
 def cleanup_mongodb():
@@ -17,5 +19,5 @@ def cleanup_mongodb():
     except Exception:
         pass
 
-atexit.register(cleanup_mongodb)
 
+atexit.register(cleanup_mongodb)

@@ -1,10 +1,10 @@
 """
 Logging models
 """
-from pydantic import BaseModel, Field
-from typing import Optional
-from datetime import datetime
 from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 
 class LogLevel(str, Enum):
@@ -38,4 +38,3 @@ class LogEntryResponse(BaseModel):
     sensor_id: Optional[str] = None
     actuator_id: Optional[str] = None
     metadata: Optional[dict] = None
-

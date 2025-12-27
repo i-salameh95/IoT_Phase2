@@ -1,9 +1,10 @@
 """
-MongoDB client configuration and CSV fallback utilities for sensor data storage
+MongoDB client configuration and CSV fallback utilities for sensor data storage.
 """
+from __future__ import annotations
+
 from datetime import datetime, timedelta
-import time
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
@@ -14,248 +15,200 @@ from app.core.logger import iot_logger
 
 
 class MongoDBService:
-    """Service for interacting with MongoDB (with CSV fallback)."""
-    
+    """
+    Service for interacting with MongoDB (with CSV fallback).
+
+    Key behaviors:
+    - If MongoDB is unavailable, fall back to CSV storage for basic demo continuity.
+    - Store tags both as a subdocument (tags) AND as flattened fields (tag_<k>) so legacy queries remain simple.
+    - Provide response-time analytics persistence for the dashboard.
+    """
+
     def __init__(self):
         self.csv_storage = CSVStorage()
         self.available = False
-        self._reconnect_interval_sec = 5.0
-        self._last_reconnect_attempt = 0.0
+        self.client: Optional[MongoClient] = None
+        self.db = None
+        self.collection = None
+        self.actuator_collection = None
+        self.response_times_collection = None
+
+        self._connect()
+
+    def _connect(self) -> None:
         try:
-            self.client = MongoClient(
-                settings.MONGODB_URL,
-                serverSelectionTimeoutMS=2000
-            )
-            # Trigger connection
+            self.client = MongoClient(settings.MONGODB_URL, serverSelectionTimeoutMS=2000)
             self.client.admin.command("ping")
             self.db = self.client[settings.MONGODB_DATABASE]
-            self._setup_collections()
+
+            # Sensor readings
+            self.collection = self.db.sensor_readings
+            self.collection.create_index([("measurement", 1), ("timestamp", -1)])
+            self.collection.create_index([("device_id", 1), ("timestamp", -1)])
+            self.collection.create_index([("sensor_id", 1), ("timestamp", -1)])
+            self.collection.create_index("timestamp")
+            self.collection.create_index([("tags.patient_id", 1), ("timestamp", -1)])
+            self.collection.create_index([("tags.cycle", 1), ("timestamp", -1)])
+
+            # Actuator states
+            self.actuator_collection = self.db.actuator_states
+            self.actuator_collection.create_index([("actuator_id", 1), ("timestamp", -1)])
+            self.actuator_collection.create_index([("device_id", 1), ("timestamp", -1)])
+            self.actuator_collection.create_index("timestamp")
+
+            # Response times
+            self.response_times_collection = self.db.response_times
+            self.response_times_collection.create_index([("timestamp", -1)])
+            self.response_times_collection.create_index([("timestamp_dt", -1)])
+            self.response_times_collection.create_index([("cycle", -1)])
+            self.response_times_collection.create_index([("patient_id", 1), ("timestamp", -1)])
+
+            self.available = True
+
         except PyMongoError:
+            self.available = False
             self.client = None
             self.db = None
             self.collection = None
             self.actuator_collection = None
             self.response_times_collection = None
 
-    def _setup_collections(self) -> None:
-        self.collection = self.db.sensor_readings
-        self.collection.create_index([("measurement", 1), ("timestamp", -1)])
-        self.collection.create_index([("device_id", 1), ("timestamp", -1)])
-        self.collection.create_index([("sensor_id", 1), ("timestamp", -1)])
-        self.collection.create_index("timestamp")
-        self.available = True
-
-        try:
-            self.actuator_collection = self.db.actuator_states
-            self.actuator_collection.create_index([("actuator_id", 1), ("timestamp", -1)])
-            self.actuator_collection.create_index("timestamp")
-        except Exception:
-            self.actuator_collection = None
-
-        try:
-            self.response_times_collection = self.db.response_times
-            self.response_times_collection.create_index([("timestamp", -1)])
-            self.response_times_collection.create_index([("timestamp_dt", -1)])  # For datetime queries
-            self.response_times_collection.create_index([("cycle", -1)])
-        except Exception:
-            self.response_times_collection = None
-
-    def _attempt_reconnect(self) -> bool:
-        now = time.time()
-        if now - self._last_reconnect_attempt < self._reconnect_interval_sec:
-            return False
-        self._last_reconnect_attempt = now
-        try:
-            self.client = MongoClient(
-                settings.MONGODB_URL,
-                serverSelectionTimeoutMS=2000
-            )
-            self.client.admin.command("ping")
-            self.db = self.client[settings.MONGODB_DATABASE]
-            self._setup_collections()
-            iot_logger.info(
-                "MongoDB reconnected; switching back to MongoDB storage.",
-                source="mongodb_client"
-            )
-            return True
-        except PyMongoError as e:
-            self._mark_unavailable(e, "reconnect", log_warning=False)
-            return False
-
-    def _ensure_available(self) -> bool:
-        if self.available:
-            return True
-        return self._attempt_reconnect()
-
     def ensure_available(self) -> bool:
-        return self._ensure_available()
+        """
+        Ensure MongoDB is connected. If not, attempt to reconnect.
 
-    def _mark_unavailable(self, error: Exception, context: str, log_warning: bool = True) -> None:
-        was_available = self.available
-        self.available = False
-        self._last_reconnect_attempt = time.time()
-        self.collection = None
-        self.actuator_collection = None
-        self.response_times_collection = None
-        self.db = None
-        if self.client:
-            try:
-                self.client.close()
-            except Exception:
-                pass
-            self.client = None
-        if was_available and log_warning:
-            iot_logger.warning(
-                f"MongoDB unavailable during {context}; switching to CSV fallback.",
-                source="mongodb_client",
-                metadata={"error": str(error)}
-            )
-    
+        Returns:
+            True if MongoDB is available, False otherwise.
+        """
+        if self.available and self.client is not None:
+            return True
+
+        self._connect()
+        if not self.available:
+            iot_logger.warning("MongoDB unavailable - using CSV fallback", source="mongodb_client")
+        return self.available
+
+    # ----------------------------
+    # Sensor data
+    # ----------------------------
     def write_sensor_data(
-        self,
-        measurement: str,
-        device_id: str,
-        sensor_id: str,
-        value: float,
-        timestamp: int = None,
-        tags: dict = None
-    ):
+            self,
+            measurement: str,
+            device_id: str,
+            sensor_id: str,
+            value: float,
+            timestamp: Optional[int] = None,
+            tags: Optional[dict] = None
+    ) -> None:
         if timestamp is None:
             timestamp = int(datetime.utcnow().timestamp())
 
-        if not self._ensure_available():
+        if not self.ensure_available() or self.collection is None:
             self.csv_storage.write_sensor_data(
                 measurement=measurement,
                 device_id=device_id,
                 sensor_id=sensor_id,
                 value=value,
                 timestamp=timestamp,
-                tags=tags
+                tags=tags,
             )
             return
 
-        if self.collection is None:
-            self.csv_storage.write_sensor_data(
-                measurement=measurement,
-                device_id=device_id,
-                sensor_id=sensor_id,
-                value=value,
-                timestamp=timestamp,
-                tags=tags
-            )
-            return
-
-        document = {
+        document: Dict[str, Any] = {
             "measurement": measurement,
             "device_id": device_id,
             "sensor_id": sensor_id,
-            "value": value,
-            "timestamp": timestamp,
+            "value": float(value),
+            "timestamp": int(timestamp),
             "created_at": datetime.utcnow(),
-            # IMPORTANT: keep tags object for ML + UI
-            "tags": tags or {}
+            "tags": tags or {},
         }
 
-        # Keep backward-compatible flattened fields too (optional but OK)
+        # Flatten tags (legacy compatibility)
         if tags:
-            document.update({f"tag_{k}": v for k, v in tags.items()})
+            for k, v in tags.items():
+                document[f"tag_{k}"] = v
 
-        try:
-            self.collection.insert_one(document)
-        except PyMongoError as e:
-            self._mark_unavailable(e, "write_sensor_data")
-            self.csv_storage.write_sensor_data(
-                measurement=measurement,
-                device_id=device_id,
-                sensor_id=sensor_id,
-                value=value,
-                timestamp=timestamp,
-                tags=tags
-            )
+        self.collection.insert_one(document)
 
-    
     def query_sensor_data(
-        self,
-        measurement: str,
-        device_id: str = None,
-        sensor_id: str = None,
-        start_time: str = None,
-        stop_time: str = None,
-        limit: int = 1000,
-        default_time_window: bool = True
+            self,
+            measurement: str,
+            device_id: str = None,
+            sensor_id: str = None,
+            start_time: str = None,
+            stop_time: str = None,
+            limit: int = 1000,
+            default_time_window: bool = True
     ) -> List[Dict]:
         """
-        Query sensor data from MongoDB
-        
-        Args:
-            measurement: Measurement name
-            device_id: Filter by device_id (optional)
-            sensor_id: Filter by sensor_id (optional)
-            start_time: Start time (ISO format or Unix timestamp, optional)
-            stop_time: Stop time (ISO format or Unix timestamp, optional)
-            limit: Maximum number of records to return
-            default_time_window: If True and no start_time provided, default to last 1 hour (default: True)
+        Query sensor data.
+
+        Returns list items:
+            {time, measurement, device_id, sensor_id, value, tags}
         """
         if start_time:
             start_dt = self._parse_datetime(start_time)
             start_ts = int(start_dt.timestamp())
         elif default_time_window:
-            # Default to last 1 hour for backward compatibility
             start_ts = int((datetime.utcnow() - timedelta(hours=1)).timestamp())
         else:
-            # No time filter - query all data
             start_ts = None
+
         stop_ts = int(self._parse_datetime(stop_time).timestamp()) if stop_time else None
-        
-        if not self._ensure_available():
-            return self.csv_storage.query_sensor_data(
+
+        if not self.ensure_available() or self.collection is None:
+            # CSV fallback does not support tags; still returns consistent shape
+            rows = self.csv_storage.query_sensor_data(
                 measurement=measurement,
                 device_id=device_id,
                 sensor_id=sensor_id,
                 start_time=start_ts,
                 stop_time=stop_ts,
-                limit=limit
+                limit=limit,
             )
-        
-        query = {"measurement": measurement}
+            for r in rows:
+                r["tags"] = {}
+            return rows
+
+        query: Dict[str, Any] = {"measurement": measurement}
+
         if start_ts is not None or stop_ts is not None:
             query["timestamp"] = {}
             if start_ts is not None:
                 query["timestamp"]["$gte"] = start_ts
             if stop_ts is not None:
                 query["timestamp"]["$lte"] = stop_ts
+
         if device_id:
             query["device_id"] = device_id
         if sensor_id:
             query["sensor_id"] = sensor_id
 
-        try:
-            cursor = self.collection.find(query).sort("timestamp", -1).limit(limit)
+        cursor = self.collection.find(query).sort("timestamp", -1).limit(int(limit))
 
-            data = []
-            for doc in cursor:
-                data.append({
-                    "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
-                    "measurement": doc["measurement"],
-                    "device_id": doc["device_id"],
-                    "sensor_id": doc["sensor_id"],
-                    "value": doc["value"],
-                    # IMPORTANT: provide tags for ML service if needed
-                    "tags": doc.get("tags", {})
-                })
+        data: List[Dict] = []
+        for doc in cursor:
+            tags = doc.get("tags") or {}
+            # Backward compat: rebuild tags from flattened fields if tags missing
+            if not tags:
+                tags = {k.replace("tag_", ""): v for k, v in doc.items() if isinstance(k, str) and k.startswith("tag_")}
+            data.append({
+                "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
+                "measurement": doc.get("measurement"),
+                "device_id": doc.get("device_id"),
+                "sensor_id": doc.get("sensor_id"),
+                "value": doc.get("value"),
+                "tags": tags,
+            })
 
-            return list(reversed(data))
-        except PyMongoError as e:
-            self._mark_unavailable(e, "query_sensor_data")
-            return self.csv_storage.query_sensor_data(
-                measurement=measurement,
-                device_id=device_id,
-                sensor_id=sensor_id,
-                start_time=start_ts,
-                stop_time=stop_ts,
-                limit=limit
-            )
+        return list(reversed(data))
 
+    def get_latest_sensor_data(self, measurement: str, device_id: str = None, sensor_id: str = None) -> Optional[Dict]:
+        """Get latest single reading for a measurement (Mongo only; CSV fallback returns best-effort)."""
+        rows = self.query_sensor_data(measurement=measurement, device_id=device_id, sensor_id=sensor_id, limit=1,
+                                      default_time_window=False)
+        return rows[-1] if rows else None
 
     def get_aggregated_data(
             self,
@@ -264,136 +217,108 @@ class MongoDBService:
             sensor_id: str = None,
             window: str = "1h",
             aggregate: str = "mean"
-        ) -> List[Dict]:
-            """
-            Get aggregated sensor data
+    ) -> List[Dict]:
+        if not self.ensure_available() or self.collection is None:
+            return self.csv_storage.get_aggregated_data(measurement, device_id, sensor_id, window, aggregate)
 
-            Args:
-                measurement: Measurement name
-                device_id: Filter by device_id (optional)
-                sensor_id: Filter by sensor_id (optional)
-                window: Time window (e.g., "1h", "5m")
-                aggregate: Aggregation function (mean, max, min, sum)
-            """
-            if not self._ensure_available():
-                return self.csv_storage.get_aggregated_data(
-                    measurement=measurement,
-                    device_id=device_id,
-                    sensor_id=sensor_id,
-                    window=window,
-                    aggregate=aggregate
-                )
+        window_value = int(window[:-1])
+        unit = window[-1]
 
-            # Parse window (e.g., "1h" -> 1 hour, "5m" -> 5 minutes)
-            window_value = int(window[:-1])
-            window_unit = window[-1]
+        if unit == "h":
+            delta = timedelta(hours=window_value)
+            bin_seconds = window_value * 3600
+        elif unit == "m":
+            delta = timedelta(minutes=window_value)
+            bin_seconds = window_value * 60
+        elif unit == "d":
+            delta = timedelta(days=window_value)
+            bin_seconds = window_value * 86400
+        else:
+            delta = timedelta(hours=1)
+            bin_seconds = 3600
 
-            if window_unit == 'h':
-                delta = timedelta(hours=window_value)
-                bin_size_seconds = window_value * 3600
-            elif window_unit == 'm':
-                delta = timedelta(minutes=window_value)
-                bin_size_seconds = window_value * 60
-            elif window_unit == 'd':
-                delta = timedelta(days=window_value)
-                bin_size_seconds = window_value * 86400
-            else:
-                delta = timedelta(hours=1)  # default
-                bin_size_seconds = 3600
+        start_ts = int((datetime.utcnow() - delta).timestamp())
 
-            start_time = int((datetime.utcnow() - delta).timestamp())
+        query: Dict[str, Any] = {"measurement": measurement, "timestamp": {"$gte": start_ts}}
+        if device_id:
+            query["device_id"] = device_id
+        if sensor_id:
+            query["sensor_id"] = sensor_id
 
-            query = {
-                "measurement": measurement,
-                "timestamp": {"$gte": start_time}
-            }
+        agg_operator = "$avg" if aggregate == "mean" else "$max" if aggregate == "max" else "$min" if aggregate == "min" else "$sum"
 
-            if device_id:
-                query["device_id"] = device_id
+        pipeline = [
+            {"$match": query},
+            {"$group": {
+                "_id": {"$subtract": ["$timestamp", {"$mod": ["$timestamp", bin_seconds]}]},
+                "value": {agg_operator: "$value"},
+                "measurement": {"$first": "$measurement"},
+                "device_id": {"$first": "$device_id"},
+                "sensor_id": {"$first": "$sensor_id"},
+            }},
+            {"$sort": {"_id": 1}},
+        ]
 
-            if sensor_id:
-                query["sensor_id"] = sensor_id
-
-            # Determine aggregation operator
-            agg_operator = "$avg" if aggregate == "mean" else \
-                          "$max" if aggregate == "max" else \
-                          "$min" if aggregate == "min" else \
-                          "$sum"
-
-            # Use MongoDB aggregation pipeline with simpler grouping
-            pipeline = [
-                {"$match": query},
-                {
-                    "$group": {
-                        "_id": {
-                            "$subtract": [
-                                "$timestamp",
-                                {"$mod": ["$timestamp", bin_size_seconds]}
-                            ]
-                        },
-                        "value": {agg_operator: "$value"},
-                        "measurement": {"$first": "$measurement"},
-                        "device_id": {"$first": "$device_id"},
-                        "sensor_id": {"$first": "$sensor_id"}
-                    }
-                },
-                {"$sort": {"_id": 1}}
-            ]
-
-            try:
-                results = list(self.collection.aggregate(pipeline))
-            except PyMongoError as e:
-                self._mark_unavailable(e, "get_aggregated_data")
-                return self.csv_storage.get_aggregated_data(
-                    measurement=measurement,
-                    device_id=device_id,
-                    sensor_id=sensor_id,
-                    window=window,
-                    aggregate=aggregate
-                )
-
-            data = []
-            for result in results:
-                timestamp_dt = datetime.utcfromtimestamp(result["_id"])
-                data.append({
-                    "time": timestamp_dt.isoformat() + "Z",
-                    "measurement": result["measurement"],
-                    "device_id": result["device_id"],
-                    "sensor_id": result["sensor_id"],
-                    "value": round(result["value"], 2)
-                })
-
-            return data
+        results = list(self.collection.aggregate(pipeline))
+        out: List[Dict] = []
+        for r in results:
+            ts = datetime.utcfromtimestamp(r["_id"]).isoformat() + "Z"
+            out.append({
+                "time": ts,
+                "measurement": r.get("measurement"),
+                "device_id": r.get("device_id"),
+                "sensor_id": r.get("sensor_id"),
+                "value": round(float(r.get("value", 0)), 2),
+            })
+        return out
 
     def get_distinct_measurements(self) -> List[str]:
-        """Get list of distinct measurement types"""
-        if not self._ensure_available():
+        if not self.ensure_available() or self.collection is None:
             return self.csv_storage.get_distinct_measurements()
-        try:
-            return self.collection.distinct("measurement")
-        except PyMongoError as e:
-            self._mark_unavailable(e, "get_distinct_measurements")
-            return self.csv_storage.get_distinct_measurements()
-    
+        return self.collection.distinct("measurement")
+
     def get_distinct_devices(self) -> List[str]:
-        """Get list of distinct device IDs"""
-        if not self._ensure_available():
+        if not self.ensure_available() or self.collection is None:
             return self.csv_storage.get_distinct_devices()
-        try:
-            return self.collection.distinct("device_id")
-        except PyMongoError as e:
-            self._mark_unavailable(e, "get_distinct_devices")
-            return self.csv_storage.get_distinct_devices()
-    
-    def write_actuator_state(self, actuator_state):
-        """
-        Write actuator state to MongoDB
-        
-        Args:
-            actuator_state: ActuatorState object
-        """
+        return self.collection.distinct("device_id")
+
+    def clear_all_data(self, include_logs: bool = False, include_csv_fallback: bool = True) -> bool:
+        """Clear all stored data (MongoDB + optional CSV fallback)."""
+        mongo_cleared = False
+        if self.ensure_available():
+            try:
+                if self.collection is not None:
+                    self.collection.delete_many({})
+                if self.actuator_collection is not None:
+                    self.actuator_collection.delete_many({})
+                if self.response_times_collection is not None:
+                    self.response_times_collection.delete_many({})
+                if include_logs and self.db is not None:
+                    self.db.logs.delete_many({})
+                mongo_cleared = True
+            except Exception as e:
+                iot_logger.warning(f"Failed to clear MongoDB data: {e}", source="mongodb_client")
+
+        csv_cleared = False
+        if include_csv_fallback:
+            try:
+                self.csv_storage.clear_sensor_data()
+                self.csv_storage.clear_actuator_states()
+                if include_logs:
+                    self.csv_storage.clear_logs()
+                csv_cleared = True
+            except Exception as e:
+                iot_logger.warning(f"Failed to clear CSV data: {e}", source="mongodb_client")
+
+        return mongo_cleared or csv_cleared
+
+    # ----------------------------
+    # Actuator states
+    # ----------------------------
+    def write_actuator_state(self, actuator_state) -> None:
         timestamp = actuator_state.timestamp or int(datetime.utcnow().timestamp())
-        if not self._ensure_available():
+
+        if not self.ensure_available() or self.actuator_collection is None:
             self.csv_storage.write_actuator_state(
                 actuator_id=actuator_state.actuator_id,
                 device_id=actuator_state.device_id,
@@ -401,237 +326,131 @@ class MongoDBService:
                 state=actuator_state.state,
                 value=actuator_state.value,
                 timestamp=timestamp,
-                tags=actuator_state.tags
+                tags=actuator_state.tags,
             )
             return
-        
-        if self.actuator_collection is None:
-            return
-        
-        document = {
+
+        doc: Dict[str, Any] = {
             "actuator_id": actuator_state.actuator_id,
             "device_id": actuator_state.device_id,
             "actuator_type": actuator_state.actuator_type,
             "state": actuator_state.state,
             "value": actuator_state.value,
-            "timestamp": timestamp,
-            "created_at": datetime.utcnow()
+            "timestamp": int(timestamp),
+            "created_at": datetime.utcnow(),
+            "tags": actuator_state.tags or {},
         }
-        
         if actuator_state.tags:
-            document.update({f"tag_{k}": v for k, v in actuator_state.tags.items()})
-        
-        try:
-            self.actuator_collection.insert_one(document)
-        except PyMongoError as e:
-            self._mark_unavailable(e, "write_actuator_state")
-            self.csv_storage.write_actuator_state(
-                actuator_id=actuator_state.actuator_id,
-                device_id=actuator_state.device_id,
-                actuator_type=actuator_state.actuator_type,
-                state=actuator_state.state,
-                value=actuator_state.value,
-                timestamp=timestamp,
-                tags=actuator_state.tags
-            )
-    
-    def get_actuator_states(
-        self,
-        actuator_id: str = None,
-        device_id: str = None,
-        limit: int = 100
-    ) -> List[Dict]:
-        """
-        Get actuator states from MongoDB
-        
-        Args:
-            actuator_id: Filter by actuator_id (optional)
-            device_id: Filter by device_id (optional)
-            limit: Maximum number of records to return
-        """
-        if not self._ensure_available():
-            return self.csv_storage.get_actuator_states(
-                actuator_id=actuator_id,
-                device_id=device_id,
-                limit=limit
-            )
-        
-        if self.actuator_collection is None:
-            return []
-        
-        collection = self.actuator_collection
-        
-        query = {}
+            for k, v in actuator_state.tags.items():
+                doc[f"tag_{k}"] = v
+
+        self.actuator_collection.insert_one(doc)
+
+    def get_actuator_states(self, actuator_id: str = None, device_id: str = None, limit: int = 100) -> List[Dict]:
+        if not self.ensure_available() or self.actuator_collection is None:
+            return self.csv_storage.get_actuator_states(actuator_id=actuator_id, device_id=device_id, limit=limit)
+
+        query: Dict[str, Any] = {}
         if actuator_id:
             query["actuator_id"] = actuator_id
         if device_id:
             query["device_id"] = device_id
-        
-        try:
-            cursor = collection.find(query).sort("timestamp", -1).limit(limit)
 
-            data = []
-            for doc in cursor:
-                data.append({
-                    "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
-                    "actuator_id": doc["actuator_id"],
-                    "device_id": doc["device_id"],
-                    "actuator_type": doc["actuator_type"],
-                    "state": doc["state"],
-                    "value": doc.get("value")
-                })
+        cursor = self.actuator_collection.find(query).sort("timestamp", -1).limit(int(limit))
+        data: List[Dict] = []
+        for doc in cursor:
+            data.append({
+                "time": datetime.utcfromtimestamp(doc["timestamp"]).isoformat() + "Z",
+                "actuator_id": doc.get("actuator_id"),
+                "device_id": doc.get("device_id"),
+                "actuator_type": doc.get("actuator_type"),
+                "state": doc.get("state"),
+                "value": doc.get("value"),
+            })
+        return list(reversed(data))
 
-            return list(reversed(data))
-        except PyMongoError as e:
-            self._mark_unavailable(e, "get_actuator_states")
-            return self.csv_storage.get_actuator_states(
-                actuator_id=actuator_id,
-                device_id=device_id,
-                limit=limit
-            )
-    
     def get_current_actuator_states(self) -> List[Dict]:
-        """Get the most recent state of each actuator (only active ones from recent cycles)"""
-        if not self._ensure_available():
+        """Get most recent state per actuator, but avoid showing very old states from prior runs."""
+        if not self.ensure_available() or self.actuator_collection is None:
             return self.csv_storage.get_current_actuator_states()
-        
-        if self.actuator_collection is None:
-            return []
-        
-        # Only show actuators that were active in the last 5 minutes
-        # This prevents showing old "ON" states from previous runs
+
         five_minutes_ago = int((datetime.utcnow() - timedelta(minutes=5)).timestamp())
-        
-        # Use aggregation pipeline to get latest state per actuator_id
-        # Filter to only include recent activations or currently active states
         pipeline = [
-            {
-                "$match": {
-                    "$or": [
-                        {"timestamp": {"$gte": five_minutes_ago}},  # Recent (last 5 min)
-                        {"state": {"$in": ["ON", "ACTIVE"]}}  # Or currently active
-                    ]
-                }
-            },
+            {"$match": {"$or": [{"timestamp": {"$gte": five_minutes_ago}}, {"state": {"$in": ["ON", "ACTIVE"]}}]}},
             {"$sort": {"timestamp": -1}},
-            {
-                "$group": {
-                    "_id": "$actuator_id",
-                    "doc": {"$first": "$$ROOT"}
-                }
-            }
+            {"$group": {"_id": "$actuator_id", "doc": {"$first": "$$ROOT"}}},
         ]
-        
-        current_states = []
-        try:
-            for result in self.actuator_collection.aggregate(pipeline):
-                doc = result["doc"]
-                # Only include if state is ON/ACTIVE or very recent (within 5 min)
-                state = doc["state"]
-                timestamp = doc["timestamp"]
-                is_recent = timestamp >= five_minutes_ago
 
-                if state in ["ON", "ACTIVE"] or is_recent:
-                    current_states.append({
-                        "actuator_id": doc["actuator_id"],
-                        "device_id": doc["device_id"],
-                        "actuator_type": doc["actuator_type"],
-                        "state": state,
-                        "value": doc.get("value"),
-                        "time": datetime.utcfromtimestamp(timestamp).isoformat() + "Z"
-                    })
+        out: List[Dict] = []
+        for r in self.actuator_collection.aggregate(pipeline):
+            doc = r["doc"]
+            ts = int(doc.get("timestamp", 0))
+            state = doc.get("state")
+            if state in ["ON", "ACTIVE"] or ts >= five_minutes_ago:
+                out.append({
+                    "actuator_id": doc.get("actuator_id"),
+                    "device_id": doc.get("device_id"),
+                    "actuator_type": doc.get("actuator_type"),
+                    "state": state,
+                    "value": doc.get("value"),
+                    "time": datetime.utcfromtimestamp(ts).isoformat() + "Z",
+                })
+        return out
 
-            return current_states
-        except PyMongoError as e:
-            self._mark_unavailable(e, "get_current_actuator_states")
-            return self.csv_storage.get_current_actuator_states()
-    
-    def write_response_times(self, cycle: int, response_times: dict, patient_id: str = None):
-        """
-        Store response time metrics for a simulation cycle
-        
-        Args:
-            cycle: Cycle number
-            response_times: Dictionary with stage timings (sensor_generation, edge_processing, storage, ml_prediction, actuator_decision, total)
-            patient_id: Patient ID (optional)
-        
-        Returns:
-            bool: True if stored successfully, False otherwise
-        """
-        if not self._ensure_available() or self.response_times_collection is None:
-            # Log warning once to help debugging
-            if not hasattr(self, '_response_times_warning_logged'):
-                iot_logger.warning(
-                    "Response times collection unavailable - response time metrics will not be stored",
-                    source="mongodb_client"
-                )
-                self._response_times_warning_logged = True
+    # ----------------------------
+    # Response times (analytics)
+    # ----------------------------
+    def write_response_times(self, cycle: int, response_times: dict, patient_id: str = None) -> bool:
+        if not self.ensure_available() or self.response_times_collection is None:
+            # best-effort; no CSV persistence for response times
+            if not hasattr(self, "_rt_warned"):
+                iot_logger.warning("Response times collection unavailable - metrics will not be stored",
+                                   source="mongodb_client")
+                self._rt_warned = True
             return False
-        
+
         try:
             now = datetime.utcnow()
             doc = {
-                "cycle": cycle,
-                "timestamp_dt": now,  # datetime for queries
-                "timestamp": int(now.timestamp()),  # Unix timestamp for consistency with sensor_readings
+                "cycle": int(cycle),
+                "timestamp_dt": now,
+                "timestamp": int(now.timestamp()),
                 "patient_id": patient_id or "all",
-                "sensor_generation": response_times.get("sensor_generation", 0),
-                "edge_processing": response_times.get("edge_processing", 0),
-                "storage": response_times.get("storage", 0),
-                "ml_prediction": response_times.get("ml_prediction", 0),
-                "actuator_decision": response_times.get("actuator_decision", 0),
-                "total": response_times.get("total", 0)
+                "sensor_generation": float(response_times.get("sensor_generation", 0)),
+                "edge_processing": float(response_times.get("edge_processing", 0)),
+                "storage": float(response_times.get("storage", 0)),
+                "ml_prediction": float(response_times.get("ml_prediction", 0)),
+                "actuator_decision": float(response_times.get("actuator_decision", 0)),
+                "total": float(response_times.get("total", 0)),
             }
             self.response_times_collection.insert_one(doc)
             return True
-        except PyMongoError as e:
-            self._mark_unavailable(e, "write_response_times")
-            return False
         except Exception as e:
-            iot_logger.warning(
-                f"Failed to store response times: {str(e)}",
-                source="mongodb_client"
-            )
+            iot_logger.warning(f"Failed to store response times: {e}", source="mongodb_client")
             return False
-    
-    def query_response_times(self, limit: int = 100, start_time: datetime = None, end_time: datetime = None):
-        """
-        Query response time data for statistics computation
-        
-        Args:
-            limit: Maximum number of records to return
-            start_time: Start time filter (optional)
-            end_time: End time filter (optional)
-        
-        Returns:
-            List of dictionaries with response time data
-        """
-        if not self._ensure_available() or self.response_times_collection is None:
-            # Log warning once to help debugging
-            if not hasattr(self, '_response_times_query_warning_logged'):
-                iot_logger.warning(
-                    "Response times collection unavailable - cannot query response time statistics",
-                    source="mongodb_client"
-                )
-                self._response_times_query_warning_logged = True
+
+    def query_response_times(self, limit: int = 100, start_time: datetime = None, end_time: datetime = None) -> List[
+        Dict]:
+        if not self.ensure_available() or self.response_times_collection is None:
+            if not hasattr(self, "_rt_query_warned"):
+                iot_logger.warning("Response times collection unavailable - cannot query statistics",
+                                   source="mongodb_client")
+                self._rt_query_warned = True
             return []
-        
+
         try:
-            query = {}
+            query: Dict[str, Any] = {}
             if start_time or end_time:
-                # Use timestamp_dt for datetime queries, or timestamp for int queries
                 query["timestamp_dt"] = {}
                 if start_time:
                     query["timestamp_dt"]["$gte"] = start_time
                 if end_time:
                     query["timestamp_dt"]["$lte"] = end_time
 
-            cursor = self.response_times_collection.find(query).sort("timestamp", -1).limit(limit)
-
-            # Convert to list and ensure all expected keys are present
-            results = []
+            cursor = self.response_times_collection.find(query).sort("timestamp", -1).limit(int(limit))
+            out: List[Dict] = []
             for doc in cursor:
-                result = {
+                out.append({
                     "sensor_generation": doc.get("sensor_generation", 0),
                     "edge_processing": doc.get("edge_processing", 0),
                     "storage": doc.get("storage", 0),
@@ -640,60 +459,24 @@ class MongoDBService:
                     "total": doc.get("total", 0),
                     "cycle": doc.get("cycle", 0),
                     "timestamp": doc.get("timestamp"),
-                    "patient_id": doc.get("patient_id", "all")
-                }
-                results.append(result)
-
-            return results
-        except PyMongoError as e:
-            self._mark_unavailable(e, "query_response_times")
-            return []
+                    "patient_id": doc.get("patient_id", "all"),
+                })
+            return out
         except Exception as e:
-            # Log warning to help debugging
-            if not hasattr(self, '_response_times_query_exception_logged'):
-                iot_logger.warning(
-                    f"Failed to query response times: {str(e)}",
-                    source="mongodb_client"
-                )
-                self._response_times_query_exception_logged = True
+            iot_logger.warning(f"Failed to query response times: {e}", source="mongodb_client")
             return []
-    
-    def close(self):
-        """Close MongoDB client connections"""
+
+    # ----------------------------
+    def close(self) -> None:
         if self.client:
             self.client.close()
-
-    def clear_all_data(self):
-        """Clear sensor, actuator, response time, and logs data."""
-        if not self._ensure_available():
-            self.csv_storage.clear_all()
-            return True
-
-        try:
-            if self.collection is not None:
-                self.collection.delete_many({})
-            if self.actuator_collection is not None:
-                self.actuator_collection.delete_many({})
-            if self.response_times_collection is not None:
-                self.response_times_collection.delete_many({})
-            try:
-                self.db.logs.delete_many({})
-            except Exception:
-                pass
-            return True
-        except PyMongoError as e:
-            self._mark_unavailable(e, "clear_all_data")
-            self.csv_storage.clear_all()
-            return True
-        except Exception:
-            return False
 
     @staticmethod
     def _parse_datetime(value: str) -> datetime:
         if not value:
             return datetime.utcnow()
         try:
-            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
         except Exception:
             return datetime.utcfromtimestamp(int(value))
 

@@ -23,4 +23,3 @@ class ActuatorStateResponseSerializer(serializers.Serializer):
     actuator_type = serializers.CharField()
     state = serializers.CharField()
     value = serializers.FloatField(required=False, allow_null=True)
-

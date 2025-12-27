@@ -13,4 +13,3 @@ urlpatterns = [
     path('api/v1/', include('apps.ml_service.urls')),
     path('api/v1/', include('apps.logs.urls')),
 ]
-

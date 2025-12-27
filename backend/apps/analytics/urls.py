@@ -2,6 +2,7 @@
 URLs for Analytics API
 """
 from django.urls import path
+
 from apps.analytics import views
 
 urlpatterns = [

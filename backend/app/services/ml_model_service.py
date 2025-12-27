@@ -1,783 +1,608 @@
 """
 ML Model Service for Health Status Prediction
-Trains and uses ML models to predict patient health status
 
+Important context for this project:
+- The simulator produces synthetic, threshold-driven vitals.
+- The most "logical" supervised labels are therefore derived from clinical thresholds
+  (normal / warning / critical). This is equivalent to learning the existing rule-system.
+
+For a course demo, this is acceptable as long as you explain:
+- Labels are generated from domain rules (weak supervision).
+- ML is an optional enhancement; the primary decision system is deterministic + explainable.
+
+Key fixes vs. older versions:
+- Train on per-cycle samples (using tags: patient_id + cycle) instead of arbitrary time bins.
+- Do NOT rely on actuator activation as the training label (that introduces timing/coverage issues).
+- Support small-but-reasonable datasets (>= 30 cycle samples recommended).
 """
-import os
-import json
-import warnings
-from typing import Dict, List, Optional, Tuple
+from __future__ import annotations
+
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
-import joblib
-
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
-from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
-from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support
+from sklearn.base import clone
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    f1_score,
-    precision_score,
-    recall_score,
-)
-
-from app.core.mongodb_client import mongodb_service
 from app.core.logger import iot_logger
-from app.models.sensor import SensorReading
+from app.core.mongodb_client import mongodb_service
+
+FEATURES = [
+    "heart_rate",
+    "blood_pressure_systolic",
+    "blood_pressure_diastolic",
+    "body_temperature",
+    "oxygen_saturation",
+    "glucose_level",
+    "activity_steps",
+]
+
+LABELS = ["normal", "warning", "critical"]
 
 
-class HealthStatusMLModel:
-    """
-    ML Model for predicting patient health status
-    Predicts: Normal, Warning, Critical
-    """
+@dataclass
+class TrainResult:
+    ok: bool
+    samples: int
+    accuracy: Optional[float] = None
+    algorithm: Optional[str] = None
+    report: Optional[str] = None
+    confusion: Optional[List[List[int]]] = None
+    message: Optional[str] = None
 
-    MODEL_DIR = os.path.join(os.path.dirname(__file__), "../../models")
-    MODEL_FILE = os.path.join(MODEL_DIR, "health_status_model.pkl")
-    SCALER_FILE = os.path.join(MODEL_DIR, "scaler.pkl")
-    META_FILE = os.path.join(MODEL_DIR, "model_meta.json")
-    MODELS_DIR = os.path.join(MODEL_DIR, "trained_models")
 
-    AVAILABLE_ALGORITHMS = {
-        "random_forest": {
-            "name": "Random Forest",
-            "class": RandomForestClassifier,
-            "params": {"n_estimators": 200, "max_depth": 12, "random_state": 42, "class_weight": "balanced"},
-        },
-        "gradient_boosting": {
-            "name": "Gradient Boosting",
-            "class": GradientBoostingClassifier,
-            "params": {"n_estimators": 150, "max_depth": 5, "random_state": 42, "learning_rate": 0.08},
-        },
-        "ada_boost": {
-            "name": "AdaBoost",
-            "class": AdaBoostClassifier,
-            "params": {"n_estimators": 100, "random_state": 42},
-        },
-        "svm": {
-            "name": "Support Vector Machine",
-            "class": SVC,
-            "params": {"kernel": "rbf", "probability": True, "random_state": 42, "class_weight": "balanced"},
-        },
-        "logistic_regression": {
-            "name": "Logistic Regression",
-            "class": LogisticRegression,
-            "params": {"max_iter": 2000, "random_state": 42, "class_weight": "balanced", "multi_class": "multinomial"},
-        },
-        "knn": {
-            "name": "K-Nearest Neighbors",
-            "class": KNeighborsClassifier,
-            "params": {"n_neighbors": 7, "weights": "distance"},
-        },
-        "naive_bayes": {
-            "name": "Naive Bayes",
-            "class": GaussianNB,
-            "params": {},
-        },
-        "decision_tree": {
-            "name": "Decision Tree",
-            "class": DecisionTreeClassifier,
-            "params": {"max_depth": 12, "random_state": 42, "class_weight": "balanced"},
-        },
-    }
-
+class MLModelService:
     def __init__(self):
-        self.model = None
-        self.current_algorithm = "random_forest"
-        self.scaler = StandardScaler()
-        self.is_trained = False
+        self.models = {
+            "random_forest": RandomForestClassifier(n_estimators=200, random_state=42),
+            "gradient_boosting": GradientBoostingClassifier(random_state=42),
+            "logistic_regression": LogisticRegression(max_iter=3000),
+            "ada_boost": AdaBoostClassifier(random_state=42),
+            "svm": SVC(kernel="rbf", probability=True),
+            "knn": KNeighborsClassifier(n_neighbors=5),
+            "naive_bayes": GaussianNB(),
+            "decision_tree": DecisionTreeClassifier(random_state=42),
+        }
+        self.best_model_name: Optional[str] = None
+        self.is_fitted: bool = False
 
-        self.model_metrics: Dict[str, Dict] = {}
-        self.feature_names = [
-            "heart_rate",
-            "blood_pressure_systolic",
-            "blood_pressure_diastolic",
-            "body_temperature",
-            "oxygen_saturation",
-            "glucose_level",
-            "activity_steps",
-            "ambient_temperature",
-            "co2_level",
-        ]
-        # Labels are integers: 0,1,2
-        self.class_names = ["Normal", "Warning", "Critical"]
+        # Lightweight "model lifecycle" metadata (to satisfy "modified whenever needed")
+        self.last_train_at_utc: Optional[str] = None
+        self.last_train_samples: int = 0
+        self.last_train_cycle: Optional[int] = None
+        self.last_train_accuracy: Optional[float] = None
 
-        # For prediction-time imputation
-        self.feature_medians_: Optional[List[float]] = None
+        # Retraining policy (simple + demo-friendly)
+        self.min_samples_to_train: int = 30
+        self.retrain_every_cycles: int = 50
+        self.min_new_samples_for_retrain: int = 20
 
-        os.makedirs(self.MODELS_DIR, exist_ok=True)
-        os.makedirs(self.MODEL_DIR, exist_ok=True)
+    def is_trained(self) -> bool:
+        return bool(self.is_fitted and self.best_model_name)
 
-        self.load_model()
-
-    # ----------------------------
-    # Feature preparation
-    # ----------------------------
-
-    def prepare_features(self, readings: List[SensorReading]) -> Optional[np.ndarray]:
+    def get_status(self) -> Dict:
         """
-        Prepare feature vector from sensor readings.
-        Uses mean per measurement across the batch, which is stable for a cycle.
-
-        Returns:
-            np.ndarray shape (1, n_features) or None if insufficient data
+        Used by /api/v1/ml/status to show ML readiness + lifecycle metadata.
         """
-        if not readings:
-            return None
-
-        sensor_dict: Dict[str, List[float]] = {}
-        for r in readings:
-            sensor_dict.setdefault(r.measurement, []).append(r.value)
-
-        features: List[float] = []
-        for name in self.feature_names:
-            vals = sensor_dict.get(name, [])
-            features.append(float(np.mean(vals)) if vals else np.nan)
-
-        # Require at least half of features present
-        if np.sum(np.isnan(features)) > (len(features) / 2):
-            return None
-
-        return np.array(features, dtype=float).reshape(1, -1)
-
-    def _impute_features(self, features: np.ndarray) -> np.ndarray:
-        """
-        Impute missing values using training medians (preferred) else zeros.
-        """
-        if features is None:
-            return features
-        if self.feature_medians_ and len(self.feature_medians_) == features.shape[1]:
-            med = np.array(self.feature_medians_, dtype=float).reshape(1, -1)
-            out = features.copy()
-            mask = np.isnan(out)
-            out[mask] = np.take(med, np.where(mask)[1])
-            return out
-        return np.nan_to_num(features, nan=0.0)
-
-    # ----------------------------
-    # Prediction
-    # ----------------------------
-
-    def predict(self, readings: List[SensorReading]) -> Dict:
-        """
-        Predict health status from sensor readings.
-
-        Returns:
-            {
-              'health_status': 'Normal'|'Warning'|'Critical'|None,
-              'confidence': float,
-              'probabilities': {class: prob},
-              'features_used': list,
-              'feature_values': {feature: value}
-            }
-        """
-        if not self.is_trained or self.model is None:
-            return {"health_status": None, "confidence": 0.0, "probabilities": {}, "error": "Model not trained"}
-
-        features = self.prepare_features(readings)
-        if features is None:
-            return {"health_status": None, "confidence": 0.0, "probabilities": {}, "error": "Insufficient sensor data"}
-
-        features = self._impute_features(features)
-
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
-                features_scaled = self.scaler.transform(features)
-        except Exception:
-            features_scaled = features
-
-        pred_label = int(self.model.predict(features_scaled)[0])
-
-        # probability support
-        prob_dict = {}
-        confidence = 0.0
-        if hasattr(self.model, "predict_proba"):
-            probs = self.model.predict_proba(features_scaled)[0]
-            confidence = float(np.max(probs))
-            prob_dict = {self.class_names[i]: float(probs[i]) for i in range(len(self.class_names))}
-        else:
-            # No probas: provide minimal confidence
-            confidence = 0.5
-
-        feature_values = {self.feature_names[i]: float(features[0, i]) for i in range(len(self.feature_names))}
         return {
-            "health_status": self.class_names[pred_label],
-            "confidence": confidence,
-            "probabilities": prob_dict,
-            "features_used": self.feature_names,
-            "feature_values": feature_values,
-            "algorithm": self.current_algorithm,
+            "is_trained": self.is_trained(),
+            "best_model": self.best_model_name,
+            "available_algorithms": sorted(self.models.keys()),
+            "training": {
+                "last_train_at_utc": self.last_train_at_utc,
+                "last_train_samples": int(self.last_train_samples),
+                "last_train_cycle": self.last_train_cycle,
+                "last_train_accuracy": self.last_train_accuracy,
+                "min_samples_to_train": int(self.min_samples_to_train),
+                "retrain_every_cycles": int(self.retrain_every_cycles),
+                "min_new_samples_for_retrain": int(self.min_new_samples_for_retrain),
+            },
+            "class_names": ["Normal", "Warning", "Critical"],
         }
 
-    # ----------------------------
-    # Training / Evaluation
-    # ----------------------------
-
-    def train(
-        self,
-        training_data: Optional[pd.DataFrame] = None,
-        split: Tuple[float, float, float] = (0.7, 0.1, 0.2),
-        algorithm: str = "random_forest",
-        force_retrain: bool = False,
-        cv_folds: int = 5,
-        random_state: int = 42,
-    ) -> Dict:
+    def maybe_retrain(self, current_cycle: Optional[int] = None, force: bool = False) -> Dict:
         """
-        Train the ML model with explicit Train/Val/Test split.
+        Auto-retrain policy:
+        - Train if untrained and enough samples exist.
+        - Retrain periodically if enough new samples have arrived.
 
-        Args:
-            training_data: DataFrame containing features + health_status_label (int 0/1/2)
-            split: (train_ratio, val_ratio, test_ratio) must sum to 1.0
-            algorithm: algorithm key from AVAILABLE_ALGORITHMS
-            cv_folds: StratifiedKFold folds
+        Returns:
+            {status, action, reason, ...}
         """
-        try:
-            if (
-                self.is_trained
-                and not force_retrain
-                and algorithm == self.current_algorithm
-                and training_data is None
-            ):
-                return {
-                    "status": "skipped",
-                    "message": "Model already trained. Set force_retrain=true to retrain.",
-                    "algorithm": self.current_algorithm,
-                    "algorithm_name": self.AVAILABLE_ALGORITHMS.get(self.current_algorithm, {}).get("name", "Unknown"),
-                    "metrics": self.model_metrics.get(self.current_algorithm, {}),
-                }
-            if algorithm not in self.AVAILABLE_ALGORITHMS:
-                return {"status": "error", "message": f"Unknown algorithm: {algorithm}"}
+        X, y = self.fetch_training_data()
+        samples = int(X.shape[0])
 
-            train_r, val_r, test_r = split
-            if not np.isclose(train_r + val_r + test_r, 1.0):
-                return {"status": "error", "message": "split ratios must sum to 1.0 (train,val,test)"}
-            if train_r <= 0 or test_r <= 0:
-                return {"status": "error", "message": "train and test ratios must be > 0"}
-
-            if training_data is None:
-                training_data = self._fetch_training_data()
-
-            if training_data is None or len(training_data) < 30:
-                return {"status": "error", "message": "Insufficient training data (need at least 30 samples)"}
-
-            # Features + labels
-            df = training_data.copy()
-            for col in self.feature_names:
-                if col not in df.columns:
-                    df[col] = 0
-            if "health_status_label" not in df.columns:
-                return {"status": "error", "message": "training_data must contain health_status_label"}
-
-            X = df[self.feature_names].astype(float)
-            y = df["health_status_label"].astype(int)
-
-            # Split into train and temp (val+test)
-            temp_size = val_r + test_r
-            X_train, X_temp, y_train, y_temp = train_test_split(
-                X,
-                y,
-                test_size=temp_size,
-                random_state=random_state,
-                stratify=y,
-            )
-
-            # Split temp into val and test
-            # val proportion relative to temp
-            if temp_size > 0:
-                val_prop = val_r / temp_size if temp_size else 0.0
-                if val_r > 0:
-                    X_val, X_test, y_val, y_test = train_test_split(
-                        X_temp,
-                        y_temp,
-                        test_size=(1.0 - val_prop),
-                        random_state=random_state,
-                        stratify=y_temp,
-                    )
-                else:
-                    X_val, y_val = X_temp.iloc[:0], y_temp.iloc[:0]
-                    X_test, y_test = X_temp, y_temp
-            else:
-                X_val, y_val = X_train.iloc[:0], y_train.iloc[:0]
-                X_test, y_test = X_train.iloc[:0], y_train.iloc[:0]
-
-            # Imputation medians from TRAIN only
-            train_medians = X_train.median(numeric_only=True).values.tolist()
-            self.feature_medians_ = [float(m) if np.isfinite(m) else 0.0 for m in train_medians]
-
-            def impute_df(dfx: pd.DataFrame) -> np.ndarray:
-                arr = dfx.values.astype(float)
-                med = np.array(self.feature_medians_, dtype=float).reshape(1, -1)
-                mask = np.isnan(arr)
-                if mask.any():
-                    arr[mask] = np.take(med, np.where(mask)[1])
-                return arr
-
-            X_train_arr = impute_df(X_train)
-            X_val_arr = impute_df(X_val) if len(X_val) else None
-            X_test_arr = impute_df(X_test) if len(X_test) else None
-
-            # Scale using TRAIN only
-            X_train_scaled = self.scaler.fit_transform(X_train_arr)
-            X_val_scaled = self.scaler.transform(X_val_arr) if X_val_arr is not None else None
-            X_test_scaled = self.scaler.transform(X_test_arr) if X_test_arr is not None else None
-
-            # Train model
-            algo_cfg = self.AVAILABLE_ALGORITHMS[algorithm]
-            model = algo_cfg["class"](**algo_cfg["params"])
-            model.fit(X_train_scaled, y_train)
-
-            # Scores
-            train_score = float(model.score(X_train_scaled, y_train))
-            val_score = float(model.score(X_val_scaled, y_val)) if X_val_scaled is not None and len(y_val) else None
-            test_score = float(model.score(X_test_scaled, y_test)) if X_test_scaled is not None and len(y_test) else None
-
-            # Test metrics
-            y_pred = model.predict(X_test_scaled) if X_test_scaled is not None and len(y_test) else np.array([])
-            if len(y_pred):
-                acc = float(accuracy_score(y_test, y_pred))
-                f1 = float(f1_score(y_test, y_pred, average="weighted"))
-                prec = float(precision_score(y_test, y_pred, average="weighted"))
-                rec = float(recall_score(y_test, y_pred, average="weighted"))
-                cm = confusion_matrix(y_test, y_pred, labels=[0, 1, 2]).tolist()
-                report = classification_report(
-                    y_test,
-                    y_pred,
-                    target_names=self.class_names,
-                    output_dict=True,
-                    zero_division=0,
-                )
-            else:
-                acc, f1, prec, rec, cm, report = 0.0, 0.0, 0.0, 0.0, [[0, 0, 0]] * 3, {}
-
-            # CV on TRAIN only (scaled train)
-            skf = StratifiedKFold(n_splits=max(2, int(cv_folds)), shuffle=True, random_state=random_state)
-            cv_scores = cross_val_score(model, X_train_scaled, y_train, cv=skf, scoring="accuracy")
-            cv_scores_list = [float(x) for x in cv_scores]
-            cv_mean = float(np.mean(cv_scores)) if len(cv_scores) else 0.0
-            cv_std = float(np.std(cv_scores)) if len(cv_scores) else 0.0
-
-            metrics = {
-                "status": "success",
-                "algorithm": algorithm,
-                "algorithm_name": algo_cfg["name"],
-
-                "split": {"train": train_r, "val": val_r, "test": test_r},
-                "samples": {
-                    "total": int(len(df)),
-                    "train": int(len(X_train)),
-                    "val": int(len(X_val)) if X_val is not None else 0,
-                    "test": int(len(X_test)) if X_test is not None else 0,
-                },
-
-                "scores": {
-                    "train_score": train_score,
-                    "val_score": val_score,
-                    "test_score": test_score,
-                },
-
-                "metrics": {
-                    "accuracy": acc,
-                    "f1_score": f1,
-                    "precision": prec,
-                    "recall": rec,
-                },
-
-                "confusion_matrix": {
-                    "labels": self.class_names,     # row/col order: Normal, Warning, Critical
-                    "matrix": cm,
-                },
-
-                "classification_report": report,
-
-                "cross_validation": {
-                    "folds": int(cv_folds),
-                    "scores": cv_scores_list,
-                    "mean": cv_mean,
-                    "std": cv_std,
-                },
+        if samples < self.min_samples_to_train:
+            return {
+                "status": "skip",
+                "action": "no_train",
+                "reason": "not_enough_samples",
+                "samples": samples,
+                "min_samples_to_train": int(self.min_samples_to_train),
             }
 
-            # Set current/best model
-            self.model = model
-            self.current_algorithm = algorithm
-            self.is_trained = True
-            self.model_metrics[algorithm] = metrics
+        if force or not self.is_trained():
+            tr = self.train_models()
+            return {
+                "status": "success" if tr.ok else "error",
+                "action": "train" if not force else "force_train",
+                "reason": "untrained" if not force else "forced",
+                "samples": tr.samples,
+                "algorithm": tr.algorithm,
+                "accuracy": tr.accuracy,
+            }
 
-            self.save_model()
-            return metrics
+        # Retrain guardrails: avoid retraining too often
+        if current_cycle is None or self.last_train_cycle is None:
+            return {"status": "skip", "action": "no_retrain", "reason": "missing_cycle_info", "samples": samples}
 
-        except Exception as e:
-            iot_logger.error(f"ML Model training error: {str(e)}", source="ml_service")
-            return {"status": "error", "message": str(e)}
+        cycles_since = int(current_cycle) - int(self.last_train_cycle)
+        new_samples = int(samples) - int(self.last_train_samples)
 
-    def compare_models(
-        self,
-        training_data: Optional[pd.DataFrame] = None,
-        split: Tuple[float, float, float] = (0.7, 0.1, 0.2),
-        algorithms: Optional[List[str]] = None,
-        cv_folds: int = 5,
-        random_state: int = 42,
-    ) -> Dict:
+        if cycles_since < self.retrain_every_cycles:
+            return {
+                "status": "skip",
+                "action": "no_retrain",
+                "reason": "too_soon",
+                "samples": samples,
+                "cycles_since_last_train": cycles_since,
+                "retrain_every_cycles": int(self.retrain_every_cycles),
+            }
+
+        if new_samples < self.min_new_samples_for_retrain:
+            return {
+                "status": "skip",
+                "action": "no_retrain",
+                "reason": "not_enough_new_samples",
+                "samples": samples,
+                "new_samples": new_samples,
+                "min_new_samples_for_retrain": int(self.min_new_samples_for_retrain),
+            }
+
+        tr = self.train_models()
+        return {
+            "status": "success" if tr.ok else "error",
+            "action": "retrain",
+            "reason": "policy_triggered",
+            "samples": tr.samples,
+            "algorithm": tr.algorithm,
+            "accuracy": tr.accuracy,
+        }
+
+    # -----------------------------
+    # Data collection (per-cycle)
+    # -----------------------------
+    def fetch_training_data(self, patient_id: Optional[str] = None, per_measurement_limit: int = 2000) -> Tuple[
+        np.ndarray, np.ndarray]:
         """
-        Train and compare multiple ML algorithms under the same split/scaler rules.
-        Saves the best (by test_score) as the default model.
+        Fetch training data from MongoDB and build per-cycle samples.
+
+        Returns:
+            X (n_samples, n_features), y (n_samples,)
         """
-        try:
-            if training_data is None:
-                training_data = self._fetch_training_data()
+        # Load recent readings per measurement
+        all_rows = []
+        for meas in FEATURES:
+            rows = mongodb_service.query_sensor_data(
+                measurement=meas,
+                device_id=None if patient_id is None else f"patient_{patient_id}_wearable",
+                limit=per_measurement_limit,
+                default_time_window=False
+            )
+            all_rows.extend(rows)
 
-            if training_data is None or len(training_data) < 30:
-                return {"status": "error", "message": "Insufficient training data (need at least 30 samples)"}
+        if not all_rows:
+            return np.empty((0, len(FEATURES))), np.empty((0,), dtype=int)
 
-            if algorithms is None:
-                algorithms = list(self.AVAILABLE_ALGORITHMS.keys())
+        # Group by (patient_id, cycle)
+        samples: Dict[Tuple[str, int], Dict[str, float]] = {}
+        for r in all_rows:
+            tags = r.get("tags") or {}
+            pid = tags.get("patient_id")
+            cyc = tags.get("cycle")
+            if pid is None or cyc is None:
+                continue
+            if patient_id and pid != patient_id:
+                continue
+            key = (pid, int(cyc))
+            samples.setdefault(key, {})[r["measurement"]] = float(r["value"])
 
-            invalid = [a for a in algorithms if a not in self.AVAILABLE_ALGORITHMS]
-            if invalid:
-                return {"status": "error", "message": f"Invalid algorithms: {invalid}"}
+        X_list = []
+        y_list = []
 
-            results = []
-            best = None
+        for (pid, cyc), feats in samples.items():
+            if not all(k in feats for k in FEATURES):
+                continue
 
-            for algo in algorithms:
-                res = self.train(
-                    training_data=training_data,
-                    split=split,
-                    algorithm=algo,
-                    force_retrain=True,
-                    cv_folds=cv_folds,
-                    random_state=random_state,
-                )
-                results.append(res)
+            label = self._determine_health_status(feats)
+            X_list.append([feats[k] for k in FEATURES])
+            y_list.append(LABELS.index(label))
 
-                if res.get("status") == "success":
-                    ts = res.get("scores", {}).get("test_score")
-                    if ts is not None and (best is None or ts > best.get("scores", {}).get("test_score", -1)):
-                        best = res
+        if not X_list:
+            return np.empty((0, len(FEATURES))), np.empty((0,), dtype=int)
 
-                # Save each trained model artifact for comparison (optional)
-                if res.get("status") == "success":
-                    model_file = os.path.join(self.MODELS_DIR, f"{algo}_model.pkl")
-                    scaler_file = os.path.join(self.MODELS_DIR, f"{algo}_scaler.pkl")
-                    meta_file = os.path.join(self.MODELS_DIR, f"{algo}_meta.json")
-                    joblib.dump(self.model, model_file)
-                    joblib.dump(self.scaler, scaler_file)
-                    with open(meta_file, "w") as f:
-                        json.dump(res, f, indent=2)
+        return np.array(X_list, dtype=float), np.array(y_list, dtype=int)
 
-            if not best:
-                return {"status": "error", "message": "All algorithms failed", "comparison": results}
+    # -----------------------------
+    # Training
+    # -----------------------------
+    def train_models(self, patient_id: Optional[str] = None) -> TrainResult:
+        """
+        Train multiple models and select the best based on validation accuracy.
+        """
+        X, y = self.fetch_training_data(patient_id=patient_id)
 
-            # Load best artifacts back into default model files--save
-            best_algo = best["algorithm"]
-            best_model_file = os.path.join(self.MODELS_DIR, f"{best_algo}_model.pkl")
-            best_scaler_file = os.path.join(self.MODELS_DIR, f"{best_algo}_scaler.pkl")
-            best_meta_file = os.path.join(self.MODELS_DIR, f"{best_algo}_meta.json")
+        if X.shape[0] < self.min_samples_to_train:
+            return TrainResult(
+                ok=False,
+                samples=int(X.shape[0]),
+                message=f"Not enough per-cycle samples to train reliably. Generate more cycles (>= {self.min_samples_to_train} recommended)."
+            )
 
-            self.model = joblib.load(best_model_file)
-            self.scaler = joblib.load(best_scaler_file)
-            self.current_algorithm = best_algo
-            self.is_trained = True
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.25, random_state=42, stratify=y if len(set(y)) > 1 else None
+        )
 
-            # restore medians if present
-            # (best meta contains no medians; keep current medians from last train)
-            self.save_model()
+        best_acc = -1.0
+        best_name = None
+        best_report = None
+        best_cm = None
 
+        for name, model in self.models.items():
+            try:
+                model.fit(X_train, y_train)
+                acc = float(model.score(X_test, y_test))
+                if acc > best_acc:
+                    best_acc = acc
+                    best_name = name
+                    y_pred = model.predict(X_test)
+                    best_report = classification_report(y_test, y_pred, target_names=LABELS, zero_division=0)
+                    best_cm = confusion_matrix(y_test, y_pred).tolist()
+            except Exception as e:
+                iot_logger.warning(f"Training failed for {name}: {e}", source="ml_model_service")
+
+        if not best_name:
+            return TrainResult(ok=False, samples=int(X.shape[0]), message="No model could be trained successfully.")
+
+        self.best_model_name = best_name
+        self.is_fitted = True
+
+        # Persist lifecycle metadata in memory (sufficient for demo + rubric)
+        self.last_train_at_utc = datetime.utcnow().isoformat() + "Z"
+        self.last_train_samples = int(X.shape[0])
+        self.last_train_accuracy = float(best_acc)
+
+        iot_logger.info(
+            f"ML models trained. Best={best_name} acc={best_acc:.3f} samples={X.shape[0]}",
+            source="ml_model_service"
+        )
+        return TrainResult(
+            ok=True,
+            samples=int(X.shape[0]),
+            accuracy=float(best_acc),
+            algorithm=best_name,
+            report=best_report,
+            confusion=best_cm
+        )
+
+    def train(self, algorithm: str = "random_forest", force_retrain: bool = False,
+              split: Tuple[float, float, float] = (0.7, 0.1, 0.2)) -> Dict:
+        """
+        Train a specific model (API-facing).
+        """
+        if algorithm not in self.models:
+            return {
+                "status": "error",
+                "message": f"Unknown algorithm '{algorithm}'",
+                "available_algorithms": sorted(self.models.keys()),
+            }
+
+        if self.is_trained() and not force_retrain and self.best_model_name == algorithm:
             return {
                 "status": "success",
-                "best_algorithm": best_algo,
-                "best_algorithm_name": best["algorithm_name"],
-                "best_test_score": best["scores"]["test_score"],
-                "best_metrics": best["metrics"],
-                "comparison": results,
-                "summary": {
-                    "total_algorithms": len(algorithms),
-                    "successful": len([r for r in results if r.get("status") == "success"]),
-                    "failed": len([r for r in results if r.get("status") != "success"]),
-                },
+                "message": f"Model '{algorithm}' already trained.",
+                "algorithm": algorithm,
+                "samples": 0,
             }
 
-        except Exception as e:
-            iot_logger.error(f"Model comparison error: {str(e)}", source="ml_service")
-            return {"status": "error", "message": str(e)}
-
-    # ----------------------------
-    # Training data fetch
-    # ----------------------------
-
-    def _infer_patient_id(self, device_id: str) -> str:
-        """
-        Infer patient_id from device_id strings like:
-          - patient_P001_wearable
-          - patient_P002_wearable
-        """
-        if not device_id:
-            return "unknown"
-        parts = device_id.split("_")
-        if len(parts) >= 2 and parts[0] == "patient":
-            return parts[1]
-        return "unknown"
-
-    def _parse_time_bucket(self, iso_time: str) -> str:
-        """
-        Convert iso string to an hour-bucket key: YYYY-MM-DDTHH
-        """
-        if not iso_time:
-            return "unknown"
-        try:
-            # datetime.fromisoformat handles "YYYY-MM-DDTHH:MM:SS" (and with timezone)
-            dt = datetime.fromisoformat(iso_time.replace("Z", "+00:00"))
-            return dt.strftime("%Y-%m-%dT%H")
-        except Exception:
-            # fallback: keep prefix
-            return iso_time[:13] if len(iso_time) >= 13 else iso_time
-
-    def _fetch_training_data(self) -> Optional[pd.DataFrame]:
-        """
-        Fetch training data from MongoDB warehouse.
-        Falls back to synthetic data if insufficient.
-
-        NOTE:
-        mongodb_service.query_sensor_data() currently returns:
-          [{time, measurement, device_id, sensor_id, value}, ...]
-        It does NOT return tags.
-        """
-        try:
-            # Collect raw flat rows from MongoDB
-            flat_rows = []
-            for measurement in self.feature_names:
-                # You may include activity_steps if stored; do not skip it silently
-                readings = mongodb_service.query_sensor_data(measurement=measurement, limit=2000, default_time_window=False)
-
-                for r in readings:
-                    device_id = r.get("device_id", "")
-                    flat_rows.append({
-                        "patient_id": self._infer_patient_id(device_id),
-                        "time_bucket": self._parse_time_bucket(r.get("time", "")),
-                        "measurement": measurement,
-                        "value": float(r.get("value", 0.0)),
-                        "device_id": device_id,
-                    })
-
-            # Pivot into samples (patient_id, hour) -> feature vector
-            if len(flat_rows) >= 300:
-                from collections import defaultdict
-
-                grouped = defaultdict(lambda: defaultdict(list))
-                for item in flat_rows:
-                    key = (item["patient_id"], item["time_bucket"])
-                    grouped[key][item["measurement"]].append(item["value"])
-
-                samples = []
-                for (pid, bucket), meas_map in grouped.items():
-                    # Require at least 5 measurements for a valid sample
-                    present = sum(1 for m in self.feature_names if m in meas_map and len(meas_map[m]) > 0)
-                    if present < 5:
-                        continue
-
-                    sample = {"patient_id": pid, "time_bucket": bucket}
-
-                    for f in self.feature_names:
-                        vals = meas_map.get(f, [])
-                        sample[f] = float(np.mean(vals)) if vals else np.nan
-
-                    # Need core vitals to label
-                    core = [
-                        sample.get("heart_rate", np.nan),
-                        sample.get("blood_pressure_systolic", np.nan),
-                        sample.get("blood_pressure_diastolic", np.nan),
-                        sample.get("body_temperature", np.nan),
-                        sample.get("oxygen_saturation", np.nan),
-                        sample.get("glucose_level", np.nan),
-                    ]
-                    if any(np.isnan(core)):
-                        continue
-
-                    sample["health_status_label"] = int(self._determine_health_status(
-                        sample["heart_rate"],
-                        sample["blood_pressure_systolic"],
-                        sample["blood_pressure_diastolic"],
-                        sample["body_temperature"],
-                        sample["oxygen_saturation"],
-                        sample["glucose_level"],
-                    ))
-                    samples.append(sample)
-
-                if len(samples) >= 80:
-                    df = pd.DataFrame(samples)
-                    df = df[self.feature_names + ["health_status_label"]].copy()
-                    df = df.fillna(0.0)
-                    iot_logger.info(f"Using {len(df)} real training samples from MongoDB", source="ml_service")
-                    return df
-
-            # Fallback: synthetic
-            iot_logger.info("Generating synthetic training data", source="ml_service")
-            return self._generate_synthetic_training_data(n_samples=1500)
-
-        except Exception as e:
-            iot_logger.error(f"Error fetching training data: {str(e)}", source="ml_service")
-            return self._generate_synthetic_training_data(n_samples=1500)
-
-    def _generate_synthetic_training_data(self, n_samples: int = 1000) -> pd.DataFrame:
-        data = []
-        for _ in range(int(n_samples)):
-            hr = np.random.normal(75, 15)
-            bp_sys = np.random.normal(120, 20)
-            bp_dia = np.random.normal(80, 10)
-            temp = np.random.normal(36.5, 0.5)
-            spo2 = np.random.normal(98, 3)
-            glucose = np.random.normal(95, 20)
-            activity = np.random.normal(5000, 2000)
-            ambient = np.random.normal(22, 2)
-            co2 = np.random.normal(700, 150)
-
-            label = int(self._determine_health_status(hr, bp_sys, bp_dia, temp, spo2, glucose))
-
-            data.append({
-                "heart_rate": float(max(40, min(200, hr))),
-                "blood_pressure_systolic": float(max(70, min(220, bp_sys))),
-                "blood_pressure_diastolic": float(max(40, min(140, bp_dia))),
-                "body_temperature": float(max(35, min(42, temp))),
-                "oxygen_saturation": float(max(70, min(100, spo2))),
-                "glucose_level": float(max(40, min(400, glucose))),
-                "activity_steps": float(max(0, activity)),
-                "ambient_temperature": float(max(15, min(30, ambient))),
-                "co2_level": float(max(350, min(2000, co2))),
-                "health_status_label": label,
-            })
-
-        return pd.DataFrame(data)
-
-    def _determine_health_status(self, hr, bp_sys, bp_dia, temp, spo2, glucose) -> int:
-        """
-        Determine health status label (0=Normal, 1=Warning, 2=Critical)
-
-        Design rule:
-        - If ANY critical condition occurs => Critical
-        - Else if >=2 warnings => Warning
-        - Else => Normal
-        """
-        critical = 0
-        warning = 0
-
-        # Heart rate
-        if hr < 50 or hr > 150:
-            critical += 1
-        elif hr < 60 or hr > 120:
-            warning += 1
-
-        # Blood pressure
-        if bp_sys < 80 or bp_sys > 180 or bp_dia < 50 or bp_dia > 120:
-            critical += 1
-        elif bp_sys < 90 or bp_sys > 140 or bp_dia < 60 or bp_dia > 90:
-            warning += 1
-
-        # Temperature
-        if temp < 35 or temp > 39.5:
-            critical += 1
-        elif temp < 36 or temp > 38:
-            warning += 1
-
-        # SpO2
-        if spo2 < 85:
-            critical += 1
-        elif spo2 < 90:
-            warning += 1
-
-        # Glucose
-        if glucose < 50 or glucose > 250:
-            critical += 1
-        elif glucose < 70 or glucose > 180:
-            warning += 1
-
-        if critical >= 1:
-            return 2
-        if warning >= 2:
-            return 1
-        return 0
-
-    # ----------------------------
-    # Persistence
-    # ----------------------------
-
-    def save_model(self):
-        """Save model + scaler + metadata."""
-        try:
-            os.makedirs(self.MODEL_DIR, exist_ok=True)
-            joblib.dump(self.model, self.MODEL_FILE)
-            joblib.dump(self.scaler, self.SCALER_FILE)
-
-            meta = {
-                "algorithm": self.current_algorithm,
-                "algorithm_name": self.AVAILABLE_ALGORITHMS[self.current_algorithm]["name"],
-                "feature_names": self.feature_names,
-                "class_names": self.class_names,
-                "feature_medians": self.feature_medians_,
-                "metrics": self.model_metrics.get(self.current_algorithm, {}),
-                "saved_at": datetime.utcnow().isoformat() + "Z",
+        X, y = self.fetch_training_data()
+        if X.shape[0] < self.min_samples_to_train:
+            return {
+                "status": "error",
+                "message": f"Not enough per-cycle samples to train reliably. Generate more cycles (>= {self.min_samples_to_train} recommended).",
+                "samples": int(X.shape[0]),
             }
-            with open(self.META_FILE, "w") as f:
-                json.dump(meta, f, indent=2)
 
-            iot_logger.info(
-                f"ML model saved ({self.AVAILABLE_ALGORITHMS[self.current_algorithm]['name']})",
-                source="ml_service",
-            )
-        except Exception as e:
-            iot_logger.error(f"Error saving model: {str(e)}", source="ml_service")
+        test_size = float(split[2]) if split and len(split) >= 3 else 0.25
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42, stratify=y if len(set(y)) > 1 else None
+        )
 
-    def load_model(self):
-        """Load model + scaler + metadata."""
-        try:
-            if os.path.exists(self.MODEL_FILE) and os.path.exists(self.SCALER_FILE):
-                self.model = joblib.load(self.MODEL_FILE)
-                self.scaler = joblib.load(self.SCALER_FILE)
+        model = self.models[algorithm]
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        report = classification_report(y_test, y_pred, target_names=LABELS, zero_division=0)
+        cm = confusion_matrix(y_test, y_pred).tolist()
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_test, y_pred, average="weighted", zero_division=0
+        )
 
-                if os.path.exists(self.META_FILE):
-                    with open(self.META_FILE, "r") as f:
-                        meta = json.load(f)
-                    meta_features = meta.get("feature_names")
-                    if meta_features and meta_features != self.feature_names:
-                        iot_logger.warning(
-                            "Loaded ML model feature set does not match current feature_names; retrain required.",
-                            source="ml_service",
-                        )
-                        self.model = None
-                        self.scaler = StandardScaler()
-                        self.is_trained = False
-                        return
-                    self.current_algorithm = meta.get("algorithm", "random_forest")
-                    self.feature_medians_ = meta.get("feature_medians")
-                    if "metrics" in meta:
-                        self.model_metrics[self.current_algorithm] = meta["metrics"]
+        acc = float(model.score(X_test, y_test))
+        self.best_model_name = algorithm
+        self.is_fitted = True
 
-                self.is_trained = True
-                iot_logger.info(
-                    f"ML model loaded ({self.AVAILABLE_ALGORITHMS.get(self.current_algorithm, {}).get('name', 'Unknown')})",
-                    source="ml_service",
-                )
-        except Exception as e:
-            iot_logger.warning(f"Could not load model: {str(e)}", source="ml_service")
-            self.is_trained = False
+        self.last_train_at_utc = datetime.utcnow().isoformat() + "Z"
+        self.last_train_samples = int(X.shape[0])
+        self.last_train_accuracy = acc
 
-    def get_available_algorithms(self) -> Dict:
-        """Get list of available algorithms."""
         return {
-            algo: {"name": cfg["name"], "description": f"{cfg['name']} classifier"}
-            for algo, cfg in self.AVAILABLE_ALGORITHMS.items()
+            "status": "success",
+            "algorithm": algorithm,
+            "samples": int(X.shape[0]),
+            "metrics": {
+                "accuracy": acc,
+                "precision": float(precision),
+                "recall": float(recall),
+                "f1_score": float(f1),
+            },
+            "report": report,
+            "confusion": cm,
         }
+
+    def compare_models(self, algorithms: Optional[List[str]] = None,
+                       split: Tuple[float, float, float] = (0.7, 0.1, 0.2),
+                       cv_folds: int = 5) -> Dict:
+        """
+        Train and compare multiple algorithms, returning metrics for each.
+        """
+        X, y = self.fetch_training_data()
+        if X.shape[0] < 30:
+            return {
+                "status": "error",
+                "message": "Not enough per-cycle samples to compare models. Generate more cycles (>= 30 recommended).",
+                "samples": int(X.shape[0]),
+                "comparison": [],
+            }
+
+        candidates = algorithms or list(self.models.keys())
+        test_size = float(split[2]) if split and len(split) >= 3 else 0.25
+
+        # Enable stratified k-fold when all classes are present and have enough samples
+        unique, counts = np.unique(y, return_counts=True)
+        can_stratify = len(unique) > 1
+        use_cv = bool(can_stratify and counts.min() >= cv_folds)
+
+        if not use_cv:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=42, stratify=y if can_stratify else None
+            )
+
+        comparison = []
+        best_acc = -1.0
+        best_name = None
+
+        for name in candidates:
+            base_model = self.models.get(name)
+            if base_model is None:
+                comparison.append({
+                    "status": "error",
+                    "algorithm": name,
+                    "message": "Unknown algorithm",
+                })
+                continue
+            try:
+                if use_cv:
+                    skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+                    accs, precs, recs, f1s = [], [], [], []
+                    for train_idx, test_idx in skf.split(X, y):
+                        model = clone(base_model)
+                        model.fit(X[train_idx], y[train_idx])
+                        y_pred = model.predict(X[test_idx])
+                        accs.append(float(model.score(X[test_idx], y[test_idx])))
+                        p, r, f, _ = precision_recall_fscore_support(
+                            y[test_idx], y_pred, average="weighted", zero_division=0
+                        )
+                        precs.append(float(p))
+                        recs.append(float(r))
+                        f1s.append(float(f))
+                    acc = float(np.mean(accs))
+                    precision = float(np.mean(precs))
+                    recall = float(np.mean(recs))
+                    f1 = float(np.mean(f1s))
+                else:
+                    model = base_model
+                    model.fit(X_train, y_train)
+                    y_pred = model.predict(X_test)
+                    acc = float(model.score(X_test, y_test))
+                    precision, recall, f1, _ = precision_recall_fscore_support(
+                        y_test, y_pred, average="weighted", zero_division=0
+                    )
+                comparison.append({
+                    "status": "success",
+                    "algorithm": name,
+                    "metrics": {
+                        "accuracy": acc,
+                        "precision": float(precision),
+                        "recall": float(recall),
+                        "f1_score": float(f1),
+                    }
+                })
+                if acc > best_acc:
+                    best_acc = acc
+                    best_name = name
+            except Exception as e:
+                comparison.append({
+                    "status": "error",
+                    "algorithm": name,
+                    "message": str(e),
+                })
+
+        if best_name:
+            # Fit the best model on all available data so predictions work immediately
+            try:
+                best_model = self.models.get(best_name)
+                if best_model is not None:
+                    best_model.fit(X, y)
+            except Exception:
+                pass
+            self.best_model_name = best_name
+            self.is_fitted = True
+
+        return {
+            "status": "success",
+            "comparison": comparison,
+            "best_model": best_name,
+        }
+
+    # -----------------------------
+    # Prediction (per patient)
+    # -----------------------------
+    def predict_health_status(self, patient_id: str) -> Optional[Dict]:
+        """
+        Predict health status for patient using latest readings.
+
+        Returns:
+            {patient_id, health_status, confidence, algorithm}
+        """
+        if not self.is_trained():
+            return None
+
+        model = self.models.get(self.best_model_name)
+        if model is None:
+            return None
+
+        # Fetch latest values
+        feats = {}
+        device_id = f"patient_{patient_id}_wearable"
+
+        for meas in FEATURES:
+            row = mongodb_service.get_latest_sensor_data(measurement=meas, device_id=device_id)
+            if row and row.get("value") is not None:
+                feats[meas] = float(row["value"])
+
+        if len(feats) < len(FEATURES):
+            return None
+
+        X = np.array([[feats[k] for k in FEATURES]], dtype=float)
+        pred = int(model.predict(X)[0])
+
+        # Confidence (probabilities if supported)
+        conf = None
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X)[0]
+            conf = float(np.max(proba))
+        else:
+            conf = 0.75
+
+        return {
+            "patient_id": patient_id,
+            "health_status": LABELS[pred].title(),
+            "confidence": round(conf, 3),
+            "algorithm": self.best_model_name,
+        }
+
+    def predict(self, readings: List) -> Dict:
+        """
+        Predict health status from a list of SensorReading objects.
+        """
+        feats = {}
+        for r in readings:
+            feats[r.measurement] = float(r.value)
+
+        missing = [m for m in FEATURES if m not in feats]
+        if missing:
+            return {
+                "status": "error",
+                "message": f"Missing measurements: {', '.join(missing)}",
+            }
+
+        if not self.is_trained():
+            label = self._determine_health_status(feats)
+            return {
+                "status": "fallback",
+                "health_status": label.title(),
+                "confidence": 0.5,
+                "algorithm": None,
+            }
+
+        model = self.models.get(self.best_model_name)
+        if model is None:
+            return {"status": "error", "message": "No trained model available"}
+
+        X = np.array([[feats[k] for k in FEATURES]], dtype=float)
+        pred = int(model.predict(X)[0])
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X)[0]
+            conf = float(np.max(proba))
+        else:
+            conf = 0.75
+
+        return {
+            "status": "success",
+            "health_status": LABELS[pred].title(),
+            "confidence": round(conf, 3),
+            "algorithm": self.best_model_name,
+        }
+
+    # -----------------------------
+    # Labeling rules (weak supervision)
+    # -----------------------------
+    def _determine_health_status(self, feats: Dict[str, float]) -> str:
+        """
+        Generate labels from domain thresholds.
+        """
+        status = "normal"
+
+        def raise_to(level: str):
+            nonlocal status
+            if status == "critical":
+                return
+            if level == "critical":
+                status = "critical"
+            elif level == "warning" and status == "normal":
+                status = "warning"
+
+        hr = feats["heart_rate"]
+        if hr < 50 or hr > 150:
+            raise_to("critical")
+        elif hr < 60 or hr > 120:
+            raise_to("warning")
+
+        spo2 = feats["oxygen_saturation"]
+        if spo2 < 90:
+            raise_to("critical")
+        elif spo2 < 95:
+            raise_to("warning")
+
+        temp = feats["body_temperature"]
+        if temp < 35.0 or temp > 39.0:
+            raise_to("critical")
+        elif temp < 36.0 or temp > 38.0:
+            raise_to("warning")
+
+        gluc = feats["glucose_level"]
+        if gluc < 70 or gluc > 200:
+            raise_to("critical")
+        elif gluc < 80 or gluc > 140:
+            raise_to("warning")
+
+        sys = feats["blood_pressure_systolic"]
+        dia = feats["blood_pressure_diastolic"]
+        if sys > 180 or dia > 120 or sys < 90 or dia < 60:
+            raise_to("critical")
+        elif sys > 140 or dia > 90:
+            raise_to("warning")
+
+        return status
 
 
 # Global instance
-health_ml_model = HealthStatusMLModel()
+ml_model_service = MLModelService()

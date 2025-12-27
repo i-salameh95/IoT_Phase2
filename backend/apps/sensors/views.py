@@ -4,7 +4,6 @@ Views for Health Monitoring Sensors API
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from django.conf import settings
 
 # Add parent directory to path to import core modules
 from app.core.mongodb_client import mongodb_service

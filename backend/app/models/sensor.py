@@ -1,9 +1,9 @@
 """
 Sensor data models
 """
-from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class SensorReading(BaseModel):
@@ -31,7 +31,7 @@ class HistoricalDataQuery(BaseModel):
     device_id: Optional[str] = None
     sensor_id: Optional[str] = None
     start_time: Optional[str] = None  # RFC3339 format--
-    stop_time: Optional[str] = None   # RFC3339 format
+    stop_time: Optional[str] = None  # RFC3339 format
     limit: int = Field(default=1000, ge=1, le=10000)
 
 
@@ -42,4 +42,3 @@ class AggregatedDataQuery(BaseModel):
     sensor_id: Optional[str] = None
     window: str = Field(default="1h", description="Time window (e.g., '1h', '5m')")
     aggregate: str = Field(default="mean", description="Aggregation function (mean, max, min, sum)")
-

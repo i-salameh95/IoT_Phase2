@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta content="width=device-width, initial-scale=1.0" name="viewport">
     <title>Health Monitoring IoT System - Dashboard</title>
-    <link rel="stylesheet" href="css/style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="css/style.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600&display=swap"
+          rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/axios@1.6.0/dist/axios.min.js"></script>
 </head>
@@ -38,25 +39,27 @@
         </div>
 
         <div class="control-buttons">
-            <button id="btn-start-cycle" class="btn btn-primary">Run Single Cycle</button>
-            <button id="btn-start-demo" class="btn btn-secondary">Start Demo</button>
-            <button id="btn-start-simulation" class="btn btn-success">Start Monitoring</button>
-            <button id="btn-stop-simulation" class="btn btn-danger" disabled>Stop Monitoring</button>
-            <button id="btn-reset-run" class="btn btn-secondary">Reset Run</button>
+            <button class="btn btn-primary" id="btn-start-cycle">Run Single Cycle</button>
+            <button class="btn btn-secondary" id="btn-start-demo">Start Demo</button>
+            <button class="btn btn-success" id="btn-start-simulation">Start Monitoring</button>
+            <button class="btn btn-danger" disabled id="btn-stop-simulation">Stop Monitoring</button>
+            <button class="btn btn-secondary" id="btn-reset-run">Reset Run</button>
         </div>
 
         <div class="simulation-settings">
-            <label>Cycles: <input type="number" id="num-cycles" value="20" min="1" max="100"></label>
-            <label>Delay (seconds): <input type="number" id="delay-seconds" value="2" min="0.5" max="10" step="0.5"></label>
+            <label>Cycles: <input id="num-cycles" max="100" min="1" type="number" value="20"></label>
+            <label>Delay (seconds): <input id="delay-seconds" max="10" min="0.5" step="0.5" type="number"
+                                           value="2"></label>
             <label class="checkbox">
-                <input type="checkbox" id="simulate-emergency">
+                <input id="simulate-emergency" type="checkbox">
                 Simulate emergency (inject abnormal vitals)
             </label>
         </div>
         <div class="quick-guide" id="quick-guide">
-            <strong>Quick guide:</strong> Start Demo shows a normal -> emergency -> normal story. Monitoring runs continuous cycles.
+            <strong>Quick guide:</strong> Start Demo shows a normal -> emergency -> normal story. Monitoring runs
+            continuous cycles.
         </div>
-        <div id="simulation-status" class="status-message"></div>
+        <div class="status-message" id="simulation-status"></div>
         <div class="session-overview">
             <div class="overview-card">
                 <span class="overview-label">Active Patient</span>
@@ -105,18 +108,21 @@
                         <thead>
                         <tr>
                             <th>Measurement</th>
+                            <th>Device</th>
                             <th>Raw</th>
                             <th>Processed</th>
-                            <th>Flag</th>
+                            <th>Flags</th>
                         </tr>
                         </thead>
                         <tbody id="latest-cycle-table">
                         <tr>
-                            <td colspan="4" class="muted-text">Run a cycle to see generated data</td>
+                            <td class="muted-text" colspan="5">Run a cycle to see generated data</td>
                         </tr>
                         </tbody>
                     </table>
-                    <div class="fine-print">Edge policy: only physically impossible values are dropped. Critical values pass through; outliers are flagged.</div>
+                    <div class="fine-print">Edge policy: only physically impossible values are dropped. Critical values
+                        pass through; outliers are flagged.
+                    </div>
                     <div class="flag-legend">
                         <span class="flag-badge normal">OK</span>
                         <span class="flag-badge warning">WARN</span>
@@ -366,10 +372,10 @@
             <p class="muted-text">Train and compare models, then review metrics</p>
         </div>
         <div class="control-buttons">
-            <button id="btn-ml-train" class="btn btn-primary">Train Default Model</button>
-            <button id="btn-ml-compare" class="btn btn-secondary">Compare Models</button>
+            <button class="btn btn-primary" id="btn-ml-train">Train Default Model</button>
+            <button class="btn btn-secondary" id="btn-ml-compare">Compare Models</button>
         </div>
-        <div id="ml-status-message" class="status-message"></div>
+        <div class="status-message" id="ml-status-message"></div>
         <div class="grid two">
             <div class="panel-card">
                 <h3>Comparison Metrics</h3>
@@ -385,7 +391,7 @@
                     </thead>
                     <tbody id="ml-compare-table">
                     <tr>
-                        <td colspan="5" class="muted-text">Run "Compare Models" to populate metrics</td>
+                        <td class="muted-text" colspan="5">Run "Compare Models" to populate metrics</td>
                     </tr>
                     </tbody>
                 </table>
@@ -418,7 +424,7 @@
                             <option value="activity_steps">Activity</option>
                         </select>
                     </label>
-                    <button id="btn-refresh-chart-vitals" class="btn btn-secondary">Refresh</button>
+                    <button class="btn btn-secondary" id="btn-refresh-chart-vitals">Refresh</button>
                 </div>
                 <div class="chart-container">
                     <canvas id="sensor-chart-vitals"></canvas>
@@ -436,7 +442,7 @@
                             <option value="sound_level">Sound Level</option>
                         </select>
                     </label>
-                    <button id="btn-refresh-chart-env" class="btn btn-secondary">Refresh</button>
+                    <button class="btn btn-secondary" id="btn-refresh-chart-env">Refresh</button>
                 </div>
                 <div class="chart-container">
                     <canvas id="sensor-chart-env"></canvas>
@@ -451,7 +457,7 @@
             <p class="muted-text">Automated responses triggered by rules or ML</p>
         </div>
         <label class="checkbox muted-text">
-            <input type="checkbox" id="toggle-previous-actuators">
+            <input id="toggle-previous-actuators" type="checkbox">
             Show actuators from previous runs
         </label>
         <div class="actuators-grid" id="actuators-grid"></div>
@@ -473,7 +479,7 @@
                     <option value="mqtt">MQTT</option>
                 </select>
             </label>
-            <button id="btn-clear-logs" class="btn btn-secondary">Clear</button>
+            <button class="btn btn-secondary" id="btn-clear-logs">Clear</button>
         </div>
         <div class="logs-container" id="logs-container"></div>
     </section>

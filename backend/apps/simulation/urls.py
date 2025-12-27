@@ -2,6 +2,7 @@
 URLs for Simulation API
 """
 from django.urls import path
+
 from apps.simulation import views
 
 urlpatterns = [

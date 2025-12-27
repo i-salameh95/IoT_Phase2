@@ -5,12 +5,12 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from app.services.ml_model_service import health_ml_model
 from app.models.sensor import SensorReading
+from app.services.ml_model_service import ml_model_service
 from apps.ml_service.serializers import (
-    PredictionRequestSerializer, 
+    PredictionRequestSerializer,
     TrainingRequestSerializer,
-    ModelComparisonRequestSerializer
+    ModelComparisonRequestSerializer,
 )
 
 
@@ -38,135 +38,90 @@ def predict_health_status(request):
         try:
             data = serializer.validated_data
             readings_data = data['readings']
-            
-            # Convert to SensorReading objects
-            readings = [
-                SensorReading(**reading_data)
-                for reading_data in readings_data
-            ]
-            
-            # Make prediction
-            prediction = health_ml_model.predict(readings)
-            
-            return Response({
-                "status": "success",
-                "prediction": prediction
-            }, status=status.HTTP_200_OK)
-            
+
+            readings = [SensorReading(**reading_data) for reading_data in readings_data]
+            prediction = ml_model_service.predict(readings)
+
+            return Response({"status": "success", "prediction": prediction}, status=status.HTTP_200_OK)
+
         except Exception as e:
-            return Response({
-                "status": "error",
-                "message": str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+            return Response({"status": "error", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+# ... existing code ...
 
 @api_view(['POST'])
 def train_model(request):
     """
-    Train the ML model with specified algorithm
-    
-    Request body (optional):
-    {
-        "algorithm": "random_forest",
-        "test_size": 0.2,
-        "force_retrain": false
-    }
-    
-    Available algorithms:
-    - random_forest (default)
-    - gradient_boosting
-    - ada_boost
-    - svm
-    - logistic_regression
-    - knn
-    - naive_bayes
-    - decision_tree
+    Train the ML model with specified algorithm.
     """
     serializer = TrainingRequestSerializer(data=request.data)
     if serializer.is_valid():
         try:
             data = serializer.validated_data
             algorithm = data.get('algorithm', 'random_forest')
-            test_size = data.get('test_size', 0.2)
-            force_retrain = data.get('force_retrain', False)
-            
-            # Train model
-            result = health_ml_model.train(
+            test_size = float(data.get('test_size', 0.2))
+            force_retrain = bool(data.get('force_retrain', False))
+
+            result = ml_model_service.train(
                 algorithm=algorithm,
                 force_retrain=force_retrain,
                 split=(0.7, max(0.0, 1.0 - (0.7 + test_size)), test_size)
             )
-            
             return Response(result, status=status.HTTP_200_OK)
-            
+
         except Exception as e:
-            return Response({
-                "status": "error",
-                "message": str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+            return Response({"status": "error", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])
 def compare_models(request):
     """
-    Train and compare multiple ML algorithms
-    
-    Request body (optional):
-    {
-        "algorithms": ["random_forest", "gradient_boosting", "svm"],
-        "test_size": 0.2
-    }
-    
-    If algorithms not specified, compares all available algorithms.
+    Train and compare multiple ML algorithms.
     """
     serializer = ModelComparisonRequestSerializer(data=request.data)
     if serializer.is_valid():
         try:
             data = serializer.validated_data
             algorithms = data.get('algorithms')
-            test_size = data.get('test_size', 0.2)
-            
-            # Compare models
-            result = health_ml_model.compare_models(
+            test_size = float(data.get('test_size', 0.2))
+
+            result = ml_model_service.compare_models(
                 algorithms=algorithms,
                 split=(0.7, max(0.0, 1.0 - (0.7 + test_size)), test_size)
             )
-            
             return Response(result, status=status.HTTP_200_OK)
-            
+
         except Exception as e:
-            return Response({
-                "status": "error",
-                "message": str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
+            return Response({"status": "error", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
-def model_status(request):
+def ml_status(request):
     """
-    Get ML model status
+    Minimal status endpoint required by frontend dashboard.
     """
-    current_algo = health_ml_model.current_algorithm
-    algo_name = health_ml_model.AVAILABLE_ALGORITHMS.get(current_algo, {}).get('name', 'Unknown')
-    
-    response = {
-        "is_trained": health_ml_model.is_trained,
-        "model_loaded": health_ml_model.model is not None,
-        "current_algorithm": current_algo,
-        "current_algorithm_name": algo_name,
-        "feature_names": health_ml_model.feature_names,
-        "class_names": health_ml_model.class_names,
-        "available_algorithms": health_ml_model.get_available_algorithms()
-    }
-    
-    # Add metrics if available
-    if current_algo in health_ml_model.model_metrics:
-        response["metrics"] = health_ml_model.model_metrics[current_algo]
-    
-    return Response(response, status=status.HTTP_200_OK)
+    try:
+        if hasattr(ml_model_service, "get_status"):
+            return Response(ml_model_service.get_status(), status=status.HTTP_200_OK)
+
+        out = {
+            "is_trained": ml_model_service.is_trained() if hasattr(ml_model_service, "is_trained") else False,
+            "best_model": getattr(ml_model_service, "best_model_name", None),
+            "class_names": ["Normal", "Warning", "Critical"],
+        }
+        return Response(out, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            "is_trained": False,
+            "best_model": None,
+            "class_names": ["Normal", "Warning", "Critical"],
+            "error": str(e)
+        }, status=status.HTTP_200_OK)

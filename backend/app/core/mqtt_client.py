@@ -10,10 +10,10 @@ from app.core.logger import iot_logger
 
 
 def create_mqtt_client(
-    client_id: str,
-    on_message: Callable,
-    on_connect: Optional[Callable] = None,
-    on_disconnect: Optional[Callable] = None
+        client_id: str,
+        on_message: Optional[Callable] = None,
+        on_connect: Optional[Callable] = None,
+        on_disconnect: Optional[Callable] = None
 ) -> mqtt.Client:
     """
     Create and configure a paho MQTT client.
@@ -29,7 +29,8 @@ def create_mqtt_client(
     if settings.MQTT_USERNAME:
         client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
 
-    client.on_message = on_message
+    if on_message:
+        client.on_message = on_message
 
     if on_connect:
         client.on_connect = on_connect

@@ -1,9 +1,9 @@
 """
 Actuator data models
 """
-from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class ActuatorState(BaseModel):
@@ -25,4 +25,3 @@ class ActuatorStateResponse(BaseModel):
     actuator_type: str
     state: str
     value: Optional[float] = None
-

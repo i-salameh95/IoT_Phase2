@@ -29,10 +29,10 @@ def _parse_topic(topic: str) -> Tuple[Optional[str], Optional[str], Optional[str
 
 
 def _build_reading(
-    payload: Dict,
-    patient_id: Optional[str],
-    device_id: Optional[str],
-    measurement: Optional[str]
+        payload: Dict,
+        patient_id: Optional[str],
+        device_id: Optional[str],
+        measurement: Optional[str]
 ) -> SensorReading:
     """
     Build SensorReading from payload and topic metadata.

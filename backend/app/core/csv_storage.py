@@ -50,13 +50,13 @@ class CSVStorage:
         self.log_file = self.base_dir / "logs.csv"
 
     def write_sensor_data(
-        self,
-        measurement: str,
-        device_id: str,
-        sensor_id: str,
-        value: float,
-        timestamp: int,
-        tags: Optional[dict] = None,
+            self,
+            measurement: str,
+            device_id: str,
+            sensor_id: str,
+            value: float,
+            timestamp: int,
+            tags: Optional[dict] = None,
     ):
         row = {
             "timestamp": str(timestamp),
@@ -69,13 +69,13 @@ class CSVStorage:
         self._append_row(self.sensor_file, self.SENSOR_HEADERS, row)
 
     def query_sensor_data(
-        self,
-        measurement: str,
-        device_id: Optional[str] = None,
-        sensor_id: Optional[str] = None,
-        start_time: Optional[int] = None,
-        stop_time: Optional[int] = None,
-        limit: int = 1000,
+            self,
+            measurement: str,
+            device_id: Optional[str] = None,
+            sensor_id: Optional[str] = None,
+            start_time: Optional[int] = None,
+            stop_time: Optional[int] = None,
+            limit: int = 1000,
     ) -> List[Dict]:
         rows = self._read_rows(self.sensor_file)
         result = []
@@ -103,12 +103,12 @@ class CSVStorage:
         return result[-limit:]
 
     def get_aggregated_data(
-        self,
-        measurement: str,
-        device_id: Optional[str],
-        sensor_id: Optional[str],
-        window: str,
-        aggregate: str,
+            self,
+            measurement: str,
+            device_id: Optional[str],
+            sensor_id: Optional[str],
+            window: str,
+            aggregate: str,
     ) -> List[Dict]:
         rows = self._read_rows(self.sensor_file)
         window_value = int(window[:-1])
@@ -163,14 +163,14 @@ class CSVStorage:
         return sorted({row.get("device_id") for row in rows if row.get("device_id")})
 
     def write_actuator_state(
-        self,
-        actuator_id: str,
-        device_id: str,
-        actuator_type: str,
-        state: str,
-        value: Optional[float],
-        timestamp: int,
-        tags: Optional[dict] = None,
+            self,
+            actuator_id: str,
+            device_id: str,
+            actuator_type: str,
+            state: str,
+            value: Optional[float],
+            timestamp: int,
+            tags: Optional[dict] = None,
     ):
         row = {
             "timestamp": str(timestamp),
@@ -184,10 +184,10 @@ class CSVStorage:
         self._append_row(self.actuator_file, self.ACTUATOR_HEADERS, row)
 
     def get_actuator_states(
-        self,
-        actuator_id: Optional[str],
-        device_id: Optional[str],
-        limit: int,
+            self,
+            actuator_id: Optional[str],
+            device_id: Optional[str],
+            limit: int,
     ) -> List[Dict]:
         rows = self._read_rows(self.actuator_file)
         filtered = []
@@ -251,11 +251,11 @@ class CSVStorage:
         self._append_row(self.log_file, self.LOG_HEADERS, row)
 
     def get_logs(
-        self,
-        level: Optional[str],
-        source: Optional[str],
-        device_id: Optional[str],
-        limit: int,
+            self,
+            level: Optional[str],
+            source: Optional[str],
+            device_id: Optional[str],
+            limit: int,
     ) -> List[Dict]:
         rows = self._read_rows(self.log_file)
         filtered = []
@@ -298,9 +298,24 @@ class CSVStorage:
 
     def clear_all(self) -> None:
         """Clear all CSV storage files."""
-        for path in [self.sensor_file, self.actuator_file, self.log_file]:
-            if path.exists():
-                path.write_text("", encoding="utf-8")
+        self.clear_sensor_data()
+        self.clear_actuator_states()
+        self.clear_logs()
+
+    def clear_sensor_data(self) -> None:
+        """Clear stored sensor readings."""
+        if self.sensor_file.exists():
+            self.sensor_file.write_text("", encoding="utf-8")
+
+    def clear_actuator_states(self) -> None:
+        """Clear stored actuator states."""
+        if self.actuator_file.exists():
+            self.actuator_file.write_text("", encoding="utf-8")
+
+    def clear_logs(self) -> None:
+        """Clear stored logs."""
+        if self.log_file.exists():
+            self.log_file.write_text("", encoding="utf-8")
 
     @staticmethod
     def _safe_int(value: Optional[str]) -> int:

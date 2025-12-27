@@ -2,7 +2,6 @@
 Serializers for Health Monitoring Sensors
 """
 from rest_framework import serializers
-from typing import Optional, Dict, List
 
 
 class SensorReadingSerializer(serializers.Serializer):
@@ -41,4 +40,3 @@ class AggregatedDataQuerySerializer(serializers.Serializer):
     sensor_id = serializers.CharField(required=False, allow_null=True)
     window = serializers.CharField(default="1h", help_text="Time window (e.g., '1h', '5m')")
     aggregate = serializers.CharField(default="mean", help_text="Aggregation function (mean, max, min, sum)")
-
