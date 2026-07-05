@@ -50,8 +50,6 @@ def predict_health_status(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# ... existing code ...
-
 @api_view(['POST'])
 def train_model(request):
     """

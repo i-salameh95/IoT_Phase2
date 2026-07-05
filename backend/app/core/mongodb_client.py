@@ -375,8 +375,9 @@ class MongoDBService:
             return self.csv_storage.get_current_actuator_states()
 
         five_minutes_ago = int((datetime.utcnow() - timedelta(minutes=5)).timestamp())
+        # Take the latest record per actuator first, then filter by freshness/state below.
+        # Filtering before grouping could hide a newer OFF record behind an older ON one.
         pipeline = [
-            {"$match": {"$or": [{"timestamp": {"$gte": five_minutes_ago}}, {"state": {"$in": ["ON", "ACTIVE"]}}]}},
             {"$sort": {"timestamp": -1}},
             {"$group": {"_id": "$actuator_id", "doc": {"$first": "$$ROOT"}}},
         ]

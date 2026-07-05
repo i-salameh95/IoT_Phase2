@@ -18,9 +18,9 @@ services:
     ports:
       - "27017:27017"
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=admin123
-      - MONGO_INITDB_DATABASE=health_data
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME:?set MONGO_ROOT_USERNAME in .env}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}
+      - MONGO_INITDB_DATABASE=${MONGO_DATABASE:-health_data}
     volumes:
       - mongodb_data:/data/db
     networks:
@@ -36,9 +36,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGODB_URL=mongodb://admin:admin123@mongodb:27017/health_data?authSource=admin
-      - MONGODB_DATABASE=health_data
-      - DEBUG=True
+      - MONGODB_URL=mongodb://${MONGO_ROOT_USERNAME:?set MONGO_ROOT_USERNAME in .env}:${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}@mongodb:27017/${MONGO_DATABASE:-health_data}?authSource=admin
+      - MONGODB_DATABASE=${MONGO_DATABASE:-health_data}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY in .env}
+      - DEBUG=${DEBUG:-True}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0,django_backend}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost,http://localhost:8000,http://127.0.0.1}
+      - CORS_ALLOW_ALL_ORIGINS=${CORS_ALLOW_ALL_ORIGINS:-False}
       - MQTT_ENABLED=True
     volumes:
       - ./backend:/app
@@ -56,8 +60,10 @@ services:
       dockerfile: Dockerfile
     container_name: health_monitoring_mqtt_subscriber
     environment:
-      - MONGODB_URL=mongodb://admin:admin123@mongodb:27017/health_data?authSource=admin
-      - MONGODB_DATABASE=health_data
+      - MONGODB_URL=mongodb://${MONGO_ROOT_USERNAME:?set MONGO_ROOT_USERNAME in .env}:${MONGO_ROOT_PASSWORD:?set MONGO_ROOT_PASSWORD in .env}@mongodb:27017/${MONGO_DATABASE:-health_data}?authSource=admin
+      - MONGODB_DATABASE=${MONGO_DATABASE:-health_data}
+      - SECRET_KEY=${SECRET_KEY:?set SECRET_KEY in .env}
+      - DEBUG=${DEBUG:-True}
       - MQTT_ENABLED=True
       - MQTT_BROKER_HOST=mqtt
       - MQTT_BROKER_PORT=1883

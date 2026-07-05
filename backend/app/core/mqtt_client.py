@@ -24,7 +24,16 @@ def create_mqtt_client(
         on_connect: optional connect callback
         on_disconnect: optional disconnect callback
     """
-    client = mqtt.Client(client_id=client_id, clean_session=True)
+    # paho-mqtt 2.x requires callback_api_version; VERSION1 keeps the
+    # v1-style callback signatures used below. Fall back for paho-mqtt 1.x.
+    try:
+        client = mqtt.Client(
+            mqtt.CallbackAPIVersion.VERSION1,
+            client_id=client_id,
+            clean_session=True
+        )
+    except AttributeError:
+        client = mqtt.Client(client_id=client_id, clean_session=True)
 
     if settings.MQTT_USERNAME:
         client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)

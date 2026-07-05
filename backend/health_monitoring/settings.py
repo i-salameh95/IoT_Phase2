@@ -4,6 +4,7 @@ Django settings for Health Monitoring IoT System
 import os
 from pathlib import Path
 
+from django.core.management.utils import get_random_secret_key
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,13 +12,28 @@ load_dotenv()
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-health-monitoring-iot-system-phase2')
+def _env_bool(name, default=False):
+    return os.getenv(name, str(default)).lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _env_list(name, default):
+    value = os.getenv(name)
+    if not value:
+        return default
+    return [item.strip() for item in value.split(',') if item.strip()]
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True') == 'True'
+DEBUG = _env_bool('DEBUG', True)
 
-ALLOWED_HOSTS = ['*']  # For Docker, allow all hosts
+# SECURITY WARNING: keep the secret key used in production secret.
+SECRET_KEY = os.getenv('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = get_random_secret_key()
+    else:
+        raise RuntimeError('SECRET_KEY must be set when DEBUG=False')
+
+ALLOWED_HOSTS = _env_list('ALLOWED_HOSTS', ['localhost', '127.0.0.1', '0.0.0.0', 'django_backend'])
 
 # Application definition
 INSTALLED_APPS = [
@@ -121,16 +137,16 @@ REST_FRAMEWORK = {
 }
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [
+CORS_ALLOWED_ORIGINS = _env_list('CORS_ALLOWED_ORIGINS', [
     "http://localhost:3000",
     "http://localhost:80",
     "http://localhost",
     "http://127.0.0.1:80",
     "http://127.0.0.1:3000",
-]
+])
 
-CORS_ALLOW_ALL_ORIGINS = DEBUG  # Allow all in development
+CORS_ALLOW_ALL_ORIGINS = _env_bool('CORS_ALLOW_ALL_ORIGINS', False)
 
 # MongoDB Configuration
-MONGODB_URL = os.getenv('MONGODB_URL', 'mongodb://admin:admin123@mongodb:27017/health_data?authSource=admin')
+MONGODB_URL = os.getenv('MONGODB_URL', 'mongodb://localhost:27017/health_data')
 MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'health_data')

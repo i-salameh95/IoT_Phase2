@@ -13,6 +13,7 @@ from collections import deque
 from typing import List, Dict, Optional, Tuple
 
 from app.core.logger import iot_logger
+from app.core.sensor_config import SENSOR_VALID_RANGES
 from app.models.sensor import SensorReading
 
 
@@ -93,6 +94,12 @@ class EdgeProcessor:
         if bounds:
             tags["outlier_bounds"] = bounds
 
+        # Clinical anomaly tags (hypoxia, tachycardia, fever, ...) for downstream analytics
+        anomaly = self.detect_anomaly(reading)
+        if anomaly["has_anomaly"]:
+            tags["anomalies"] = anomaly["anomalies"]
+            tags["severity"] = anomaly["severity"]
+
         processed_reading = SensorReading(
             measurement=reading.measurement,
             device_id=reading.device_id,
@@ -119,54 +126,9 @@ class EdgeProcessor:
                 processed.append(pr)
         return processed
 
-    def aggregate_readings(self, readings: List[SensorReading], window_seconds: int = 60) -> List[SensorReading]:
-        """
-        Aggregate sensor readings over a time window (mean).
-
-        Notes:
-        - Aggregation is measurement-aware (no "readings[0].measurement" bug).
-        """
-        if not readings:
-            return []
-
-        grouped: Dict[Tuple[str, int, str], List[float]] = {}
-        for reading in readings:
-            sensor_key = f"{reading.device_id}_{reading.sensor_id}"
-            window_start = (int(reading.timestamp) // window_seconds) * window_seconds
-            key = (sensor_key, window_start, reading.measurement)
-            grouped.setdefault(key, []).append(reading.value)
-
-        aggregated: List[SensorReading] = []
-        for (sensor_key, window_start, measurement), values in grouped.items():
-            device_id, sensor_id = sensor_key.rsplit('_', 1)
-            avg_value = statistics.mean(values)
-            aggregated.append(SensorReading(
-                measurement=measurement,
-                device_id=device_id,
-                sensor_id=sensor_id,
-                value=round(avg_value, 2),
-                timestamp=window_start,
-                tags={
-                    "aggregated": True,
-                    "window_seconds": window_seconds,
-                    "count": len(values),
-                    "processed_by": "edge_processor"
-                }
-            ))
-        return aggregated
-
     def _validate_range(self, reading: SensorReading) -> bool:
         """Validate sensor reading is within expected hard bounds (device plausibility bounds)."""
-        ranges = {
-            "heart_rate": (40, 200),
-            "blood_pressure_systolic": (70, 220),
-            "blood_pressure_diastolic": (40, 140),
-            "body_temperature": (35.0, 42.0),
-            "oxygen_saturation": (70, 100),
-            "glucose_level": (40, 400),
-            "activity_steps": (0, 50000),
-        }
-        expected = ranges.get(reading.measurement)
+        expected = SENSOR_VALID_RANGES.get(reading.measurement)
         if not expected:
             return True
         lo, hi = expected

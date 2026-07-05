@@ -30,9 +30,13 @@ def _parse_bool(value, default: bool = False) -> bool:
 
 
 def _pick_ml_prediction(result: dict, patient_id: str | None):
-    preds = result.get("ml_predictions") or result.get("ml_predictions")  # keep defensive
+    """Pick the ML prediction for the requested patient (or the first one)."""
+    preds = result.get("ml_predictions")
     if not isinstance(preds, dict) or not preds:
         return None
+    if patient_id and patient_id in preds:
+        return preds[patient_id]
+    return next(iter(preds.values()))
 
 
 def _adapt_cycle_payload_for_ui(result: dict, patient_id: str | None) -> dict:
@@ -98,8 +102,9 @@ def run_simulation(request):
                 return Response({"status": "error", "message": "emergency_rate must be >= 0"},
                                 status=status.HTTP_400_BAD_REQUEST)
 
-        if num_cycles < 1 or num_cycles > 10000:
-            return Response({"status": "error", "message": "num_cycles must be between 1 and 10000"},
+        # The request blocks until all cycles finish, so keep the bound modest.
+        if num_cycles < 1 or num_cycles > 200:
+            return Response({"status": "error", "message": "num_cycles must be between 1 and 200"},
                             status=status.HTTP_400_BAD_REQUEST)
 
         if delay_seconds < 0.1 or delay_seconds > 10.0:
@@ -145,7 +150,6 @@ def stop_simulation(request):
 def reset_simulation(request):
     """Clear stored data and reset in-memory simulation state."""
     try:
-        # FIX: engine method name
         health_simulation_engine.reset_run()
         ok = mongodb_service.clear_all_data()
         return Response({"status": "success", "cleared": bool(ok)}, status=status.HTTP_200_OK)
