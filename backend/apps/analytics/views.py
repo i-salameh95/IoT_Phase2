@@ -91,7 +91,6 @@ def export_data(request):
             tag_df = pd.json_normalize(tags_norm).add_prefix("tag_")
             df = pd.concat([df.drop(columns=['tags']), tag_df], axis=1)
         elif 'tags' in df.columns:
-            # ... existing code ...
             df['tags'] = df['tags'].apply(lambda x: str(x) if x is not None else "")
 
         if fmt == 'csv':
@@ -141,7 +140,7 @@ def export_data(request):
         return Response({"status": "error", "message": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# ... existing code ...
+@api_view(['GET'])
 def analytics_summary(request):
     """
     Descriptive statistics for a measurement.

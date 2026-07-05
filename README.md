@@ -7,15 +7,18 @@ End-to-end health IoT stack with simulated sensors (vitals + environment), edge 
 ## Quick Start (Docker Compose)
 
 ```bash
+cp .env.example .env          # Windows: copy .env.example .env
+# Edit .env and choose local-only credentials.
 docker compose up -d          # start backend, frontend, MongoDB, Mosquitto, MQTT subscriber
 docker compose ps             # verify all services are Up
 ```
 
 Services: frontend (http://localhost), backend/API (http://localhost:8000), MongoDB (27017), Mosquitto (1883), MQTT subscriber (ingest), ML/analytics inside backend.  
-Mongo Compass URI: `mongodb://admin:admin123@localhost:27017/health_data?authSource=admin`
+Mongo Compass: connect to `localhost:27017` with the Mongo username/password from `.env` (authentication database `admin`) and database `health_data`.
 
 Sanity checks:
-- Recent sensor rows: `docker compose exec mongodb mongosh health_data --eval 'db.sensor_readings.find().sort({timestamp:-1}).limit(3).pretty()'`
+- End-to-end check (normal cycle, emergency cycle, edge filter): `docker compose exec django_backend python manage.py demo_check`
+- Recent sensor rows (Mongo runs with auth): `docker compose exec mongodb sh -c 'mongosh -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin health_data --eval "db.sensor_readings.find().sort({timestamp:-1}).limit(3).pretty()"'`
 - ML dataset report: `docker compose exec django_backend sh -c "PYTHONPATH=/app python3 tools/ml_report.py --per_measurement_limit 5000 --train"`
 
 ---
@@ -28,7 +31,7 @@ Sanity checks:
 **Ingestion / API** (Django backend): persists to MongoDB (or CSV fallback), exposes REST, ML, analytics, and actuator control.  
 **Storage**: MongoDB primary; CSV fallback in `backend/storage` for sensors, actuators, logs when DB unavailable.  
 **ML/Analytics**: scikit-learn models, training/comparison endpoints, descriptive stats, export to CSV/XLSX, response-time metrics.  
-**Actuators**: alert, medication dispenser, emergency call, health report generator.  
+**Actuators**: alert, medication dispenser (hypoglycemia), emergency call, health report generator; active actuators are turned OFF automatically when the patient returns to normal.  
 **Dashboard** (frontend): charts, controls, ML status, response-time view, MQTT indicator (based on recent `source="mqtt"` logs).
 
 Docker Compose layers:
@@ -37,6 +40,27 @@ Docker Compose layers:
 - `mongodb`: data warehouse.
 - `mqtt` (Mosquitto): broker.
 - `mqtt_subscriber`: consumes MQTT topics, writes to storage.
+
+---
+
+## Repository Layout
+
+```text
+IoT_Phase2/
+├── backend/
+│   ├── app/
+│   │   ├── core/               # config, Mongo/CSV storage, logger, MQTT client, sensor ranges
+│   │   ├── models/             # Pydantic schemas (sensor readings, actuator states)
+│   │   └── services/           # simulator, edge processor, simulation engine, controller, ML
+│   ├── apps/                   # Django apps: sensors, actuators, simulation, ml_service, analytics, logs
+│   ├── health_monitoring/      # Django project (settings, urls)
+│   ├── tools/                  # ml_report.py (dataset/training report)
+│   └── requirements.txt
+├── frontend/                   # static dashboard (HTML/CSS/JS + Chart.js)
+├── mqtt/mosquitto.conf         # broker config
+├── doc/                        # assignment briefs (Phase 1, Final Phase, sensors list)
+└── docker-compose.yml
+```
 
 ---
 
@@ -132,4 +156,4 @@ Set env vars for Mongo/MQTT if not using Docker (see `backend/app/core/config.py
 
 ## Notes on MQTT Indicator
 
-The dashboard MQTT badge is driven by recent `source="mqtt"` logs (expires after ~2 minutes). It may show OFF even while Mosquitto and the subscriber are running; rely on `docker compose ps` or Mongo inserts for truth.
+The dashboard MQTT badge is driven by recent `source="mqtt"` logs (expires after ~2 minutes). If no cycle has published recently it may show OFF even while Mosquitto and the subscriber are running; rely on `docker compose ps` or Mongo inserts for truth.

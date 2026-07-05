@@ -194,6 +194,10 @@ class HealthSimulationEngine:
                 decision = self._evaluate_health(pid, pid_readings)
                 decision["decision_source"] = "rules"
 
+            # Latest values let the controller apply measurement-specific
+            # actuations (e.g. medication dispenser on hypoglycemia).
+            decision["latest_readings"] = {r.measurement: float(r.value) for r in pid_readings}
+
             decisions.append(decision)
             total_decisions += 1
 

@@ -28,11 +28,14 @@ class Settings:
     def __init__(self):
         # Try to get from Django settings first, fallback to environment variables
         self.MONGODB_URL = _get_django_setting('MONGODB_URL') or os.getenv('MONGODB_URL',
-                                                                           'mongodb://admin:admin123@localhost:27017/health_data?authSource=admin')
+                                                                           'mongodb://localhost:27017/health_data')
         self.MONGODB_DATABASE = _get_django_setting('MONGODB_DATABASE') or os.getenv('MONGODB_DATABASE', 'health_data')
 
         # MQTT Configuration
-        self.MQTT_ENABLED = (_get_django_setting('MQTT_ENABLED') or os.getenv('MQTT_ENABLED', 'True')) == 'True'
+        mqtt_enabled = _get_django_setting('MQTT_ENABLED')
+        if mqtt_enabled is None:
+            mqtt_enabled = os.getenv('MQTT_ENABLED', 'True')
+        self.MQTT_ENABLED = str(mqtt_enabled).strip().lower() in {'1', 'true', 'yes', 'on'}
         self.MQTT_BROKER_HOST = _get_django_setting('MQTT_BROKER_HOST') or os.getenv('MQTT_BROKER_HOST', 'mqtt')
         self.MQTT_BROKER_PORT = int(_get_django_setting('MQTT_BROKER_PORT') or os.getenv('MQTT_BROKER_PORT', '1883'))
         self.MQTT_USERNAME = _get_django_setting('MQTT_USERNAME') or os.getenv('MQTT_USERNAME')

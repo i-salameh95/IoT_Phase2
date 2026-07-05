@@ -13,10 +13,13 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self.stdout.write("Running normal cycle...")
-        normal = health_simulation_engine.run_cycle(patient_id="P001", simulate_emergency=False)
+        normal = health_simulation_engine.run_single_cycle(patient_id="P001", simulate_emergency=False)
 
         self.stdout.write("Running emergency cycle...")
-        emergency = health_simulation_engine.run_cycle(patient_id="P001", simulate_emergency=True)
+        # emergency_rate=1.0 guarantees the emergency flag is honored for this cycle
+        emergency = health_simulation_engine.run_single_cycle(
+            patient_id="P001", simulate_emergency=True, emergency_rate=1.0
+        )
 
         self.stdout.write("Edge filter check (out-of-range)...")
         bad = SensorReading(
@@ -30,14 +33,14 @@ class Command(BaseCommand):
         filtered = edge_processor.process_reading(bad)
 
         def summarize(result, label):
+            statuses = [d.get("status") for d in (result.get("decisions") or [])]
             return {
                 "label": label,
                 "readings": result.get("sensor_readings"),
-                "processed": result.get("processed_readings"),
-                "filtered": result.get("filtered_readings"),
                 "emergency": result.get("emergency_triggered"),
                 "decisions": result.get("decisions_made"),
-                "health_status": (result.get("ml_prediction") or {}).get("health_status"),
+                "statuses": statuses,
+                "ml_predictions": result.get("ml_predictions"),
             }
 
         normal_sum = summarize(normal, "normal")
